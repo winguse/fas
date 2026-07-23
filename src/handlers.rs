@@ -131,6 +131,7 @@ pub async fn auth_handler(
         }
 
         // Show pending page
+        let short_sid = user.sid.split('-').next().unwrap_or(&user.sid);
         let body_html = format!(
             r#"<h1>{}</h1>
 <p>{}</p>
@@ -139,7 +140,7 @@ pub async fn auth_handler(
 <p>{}</p>"#,
             s.visitor_wait_heading,
             s.visitor_wait_body,
-            escape_html(&user.sid),
+            escape_html(short_sid),
             s.copy_btn,
             s.badge_pending,
             s.visitor_wait_footer
@@ -188,6 +189,7 @@ pub async fn auth_handler(
     state.store.mark_dirty(state.config.save_interval).await;
     tracing::info!("New visitor: {} on {} from {}", new_sid, domain, client_ip);
 
+    let short_new_sid = new_sid.split('-').next().unwrap_or(&new_sid);
     let body_html = format!(
         r#"<h1>{}</h1>
 <p>{}</p>
@@ -196,7 +198,7 @@ pub async fn auth_handler(
 <p>{}</p>"#,
         s.visitor_new_heading,
         s.visitor_new_body,
-        escape_html(&new_sid),
+        escape_html(short_new_sid),
         s.copy_btn,
         s.badge_pending,
         s.visitor_new_footer
@@ -236,9 +238,20 @@ pub async fn list_users_handler(State(state): State<AppState>) -> impl IntoRespo
     let mut users: Vec<crate::store::User> = inner.users.values().cloned().collect();
     users.sort_by_key(|u| std::cmp::Reverse(u.created_at));
 
+    let mut users_json = Vec::new();
+    for u in users {
+        let short_sid = u.sid.split('-').next().unwrap_or(&u.sid).to_string();
+        if let Ok(mut val) = serde_json::to_value(&u) {
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("sid".to_string(), serde_json::Value::String(short_sid));
+            }
+            users_json.push(val);
+        }
+    }
+
     Json(serde_json::json!({
         "ok": true,
-        "users": users
+        "users": users_json
     }))
 }
 
@@ -248,20 +261,26 @@ pub async fn approve_user_handler(
     Path(sid): Path<String>,
 ) -> impl IntoResponse {
     let mut inner = state.store.inner.write().await;
-    if let Some(user) = inner.users.get_mut(&sid) {
-        user.approved = true;
-        user.updated_at = Utc::now();
-        inner.dirty = true;
-        drop(inner);
-        state.store.mark_dirty(state.config.save_interval).await;
-        tracing::info!("Approved: {}", sid);
-        (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
-    } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "ok": false, "error": "User not found" })),
-        )
+    let target_sid = inner
+        .users
+        .keys()
+        .find(|k| *k == &sid || k.split('-').next() == Some(&sid))
+        .cloned();
+    if let Some(full_sid) = target_sid {
+        if let Some(user) = inner.users.get_mut(&full_sid) {
+            user.approved = true;
+            user.updated_at = Utc::now();
+            inner.dirty = true;
+            drop(inner);
+            state.store.mark_dirty(state.config.save_interval).await;
+            tracing::info!("Approved: {}", full_sid);
+            return (StatusCode::OK, Json(serde_json::json!({ "ok": true })));
+        }
     }
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "ok": false, "error": "User not found" })),
+    )
 }
 
 /// POST /api/users/:sid/revoke
@@ -270,20 +289,26 @@ pub async fn revoke_user_handler(
     Path(sid): Path<String>,
 ) -> impl IntoResponse {
     let mut inner = state.store.inner.write().await;
-    if let Some(user) = inner.users.get_mut(&sid) {
-        user.approved = false;
-        user.updated_at = Utc::now();
-        inner.dirty = true;
-        drop(inner);
-        state.store.mark_dirty(state.config.save_interval).await;
-        tracing::info!("Revoked: {}", sid);
-        (StatusCode::OK, Json(serde_json::json!({ "ok": true })))
-    } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "ok": false, "error": "User not found" })),
-        )
+    let target_sid = inner
+        .users
+        .keys()
+        .find(|k| *k == &sid || k.split('-').next() == Some(&sid))
+        .cloned();
+    if let Some(full_sid) = target_sid {
+        if let Some(user) = inner.users.get_mut(&full_sid) {
+            user.approved = false;
+            user.updated_at = Utc::now();
+            inner.dirty = true;
+            drop(inner);
+            state.store.mark_dirty(state.config.save_interval).await;
+            tracing::info!("Revoked: {}", full_sid);
+            return (StatusCode::OK, Json(serde_json::json!({ "ok": true })));
+        }
     }
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "ok": false, "error": "User not found" })),
+    )
 }
 
 /// DELETE /api/users/:sid
@@ -292,21 +317,28 @@ pub async fn delete_user_handler(
     Path(sid): Path<String>,
 ) -> impl IntoResponse {
     let mut inner = state.store.inner.write().await;
-    if inner.users.remove(&sid).is_some() {
-        inner.dirty = true;
-        drop(inner);
-        state.store.mark_dirty(state.config.save_interval).await;
-        tracing::info!("Deleted: {}", sid);
-        (
-            StatusCode::OK,
-            Json(serde_json::json!({ "ok": true, "deleted": sid })),
-        )
-    } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "ok": false, "error": "User not found" })),
-        )
+    let target_sid = inner
+        .users
+        .keys()
+        .find(|k| *k == &sid || k.split('-').next() == Some(&sid))
+        .cloned();
+    if let Some(full_sid) = target_sid {
+        if inner.users.remove(&full_sid).is_some() {
+            inner.dirty = true;
+            drop(inner);
+            state.store.mark_dirty(state.config.save_interval).await;
+            tracing::info!("Deleted: {}", full_sid);
+            let short_deleted = full_sid.split('-').next().unwrap_or(&full_sid).to_string();
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({ "ok": true, "deleted": short_deleted })),
+            );
+        }
     }
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "ok": false, "error": "User not found" })),
+    )
 }
 
 /// GET / (Admin page)
