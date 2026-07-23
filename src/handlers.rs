@@ -90,7 +90,21 @@ pub async fn auth_handler(
         .unwrap_or("-")
         .to_string();
 
-    let domain = query.domain.unwrap_or_else(|| "unknown".to_string());
+    let domain = query
+        .domain
+        .or_else(|| {
+            headers
+                .get("X-Forwarded-Host")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .or_else(|| {
+            headers
+                .get("Host")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
     let s = crate::i18n::t(locale);
 
     let mut user_found = None;
