@@ -18,6 +18,8 @@ pub struct User {
     pub last_seen: DateTime<Utc>,
     pub user_agent: String,
     pub request_count: u64,
+    #[serde(default)]
+    pub remark: String,
 }
 
 pub struct StoreInner {
@@ -245,6 +247,7 @@ mod tests {
             last_seen: Utc::now(),
             user_agent: "test-ua".to_string(),
             request_count: 5,
+            remark: String::new(),
         };
 
         let approved_user = User {
@@ -257,6 +260,7 @@ mod tests {
             last_seen: Utc::now(),
             user_agent: "test-ua".to_string(),
             request_count: 10,
+            remark: String::new(),
         };
 
         // Add users

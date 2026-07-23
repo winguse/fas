@@ -129,6 +129,10 @@ async fn main() {
             "/api/users/:sid/revoke",
             post(handlers::revoke_user_handler),
         )
+        .route(
+            "/api/users/:sid/remark",
+            post(handlers::update_remark_handler),
+        )
         .route("/api/users/:sid", delete(handlers::delete_user_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state);

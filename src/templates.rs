@@ -65,7 +65,7 @@ pub fn admin_table_rows(locale: Locale, users: &[User]) -> String {
     let s = t(locale);
     if users.is_empty() {
         return format!(
-            "<tr><td colspan=\"9\" class=\"empty\">{}</td></tr>",
+            "<tr><td colspan=\"10\" class=\"empty\">{}</td></tr>",
             s.admin_empty
         );
     }
@@ -73,33 +73,25 @@ pub fn admin_table_rows(locale: Locale, users: &[User]) -> String {
     users
         .iter()
         .map(|u| {
+            let short_sid = if u.sid.len() >= 6 { &u.sid[0..6] } else { &u.sid };
+
             let status_badge = if u.approved {
-                format!("<span class=\"badge badge-yes\">✅ {}</span>", s.badge_approved)
+                format!("<span class=\"badge badge-yes clickable\" onclick=\"revoke(event, '{}')\">✅ {}</span>", short_sid, s.badge_approved)
             } else {
-                format!("<span class=\"badge badge-no\">⏳ {}</span>", s.badge_pending)
-            };
-
-            let short_sid = u.sid.split('-').next().unwrap_or(&u.sid);
-
-            let approve_btn = if u.approved {
-                format!(
-                    "<button class=\"btn btn-red btn-sm\" onclick=\"revoke(event, '{}')\">{}</button>",
-                    short_sid, s.btn_revoke
-                )
-            } else {
-                format!(
-                    "<button class=\"btn btn-green btn-sm\" onclick=\"approve('{}')\">{}</button>",
-                    short_sid, s.btn_approve
-                )
+                format!("<span class=\"badge badge-no clickable\" onclick=\"approve('{}')\">⏳ {}</span>", short_sid, s.badge_pending)
             };
 
             let last_seen_str = u.last_seen.format("%Y-%m-%d %H:%M:%S").to_string();
             let relative_seen = format_relative_time(locale, u.last_seen);
             let last_seen_display = format!("{} ({})", last_seen_str, relative_seen);
+
             let created_at_str = u.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+            let relative_created = format_relative_time(locale, u.created_at);
+            let created_at_display = format!("{} ({})", created_at_str, relative_created);
 
             let ip = if u.last_ip.is_empty() { "-" } else { &u.last_ip };
             let ua_short = short_ua(&u.user_agent);
+            let remark_escaped = escape_html(&u.remark);
 
             format!(
                 r#"<tr>
@@ -111,18 +103,21 @@ pub fn admin_table_rows(locale: Locale, users: &[User]) -> String {
         <td class="mono">{}</td>
         <td class="ua-cell" title="{}">{}</td>
         <td class="mono">{}</td>
-        <td><div class="actions">{}<button class="btn btn-gray btn-sm" onclick="remove(event, '{}')">{}</button></div></td>
+        <td><input type="text" class="remark-input" data-sid="{}" onfocus="showDropdown(this)" onblur="hideDropdown(this)" oninput="handleRemarkInput(this)" onchange="updateRemark('{}', this.value)" value="{}"></td>
+        <td><button class="btn btn-gray btn-sm" onclick="remove(event, '{}')">{}</button></td>
       </tr>"#,
                 short_sid,
                 escape_html(&u.domain),
-                created_at_str,
+                created_at_display,
                 status_badge,
                 escape_html(ip),
                 last_seen_display,
                 escape_html(&u.user_agent),
                 escape_html(&ua_short),
                 u.request_count,
-                approve_btn,
+                short_sid,
+                short_sid,
+                remark_escaped,
                 short_sid,
                 s.btn_delete
             )
@@ -157,6 +152,8 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
   .badge {{ display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }}
   .badge-yes {{ background: #22c55e20; color: #22c55e; border: 1px solid #22c55e40; }}
   .badge-no {{ background: #ef444420; color: #ef4444; border: 1px solid #ef444440; }}
+  .badge.clickable {{ cursor: pointer; transition: transform 0.1s, opacity 0.1s; user-select: none; }}
+  .badge.clickable:hover {{ transform: scale(1.05); opacity: 0.9; }}
   .btn {{ display: inline-block; padding: 0.3rem 0.6rem; border: none; border-radius: 6px; font-size: 0.75rem; cursor: pointer; font-weight: 500; transition: opacity 0.15s; }}
   .btn:hover {{ opacity: 0.8; }}
   .btn-green {{ background: #22c55e; color: #fff; }}
@@ -167,6 +164,13 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
   .empty {{ text-align: center; padding: 3rem 1rem; color: #64748b; }}
   .toast {{ position: fixed; top: 1rem; right: 1rem; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 0.75rem 1.25rem; color: #e2e8f0; font-size: 0.9rem; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: none; z-index: 100; }}
   .ua-cell {{ max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  .remark-container {{ position: relative; display: inline-block; }}
+  .remark-input {{ background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.25rem 0.5rem; color: #e2e8f0; font-size: 0.78rem; width: 140px; transition: border-color 0.15s; }}
+  .remark-input:focus {{ outline: none; border-color: #3b82f6; }}
+  .remark-dropdown {{ position: absolute; top: 100%; left: 0; width: 150px; max-height: 180px; overflow-y: auto; background: #1e293b; border: 1px solid #334155; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); z-index: 100; display: none; margin-top: 2px; }}
+  .remark-dropdown.show {{ display: block; }}
+  .dropdown-item {{ padding: 0.4rem 0.6rem; color: #e2e8f0; font-size: 0.78rem; cursor: pointer; transition: background 0.1s, color 0.1s; text-align: left; }}
+  .dropdown-item:hover {{ background: #0f172a; color: #38bdf8; }}
   @media (max-width: 768px) {{
     .container {{ padding: 1rem 0.5rem; }}
     th, td {{ padding: 0.4rem 0.35rem; font-size: 0.75rem; }}
@@ -194,6 +198,7 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
   <th>{admin_th_last_seen}</th>
   <th>{admin_th_ua}</th>
   <th>{admin_th_req_count}</th>
+  <th>{admin_th_remark}</th>
   <th>{admin_th_actions}</th>
 </tr>
 </thead>
@@ -219,8 +224,13 @@ const i18n = {{
   btnDelete: {btn_delete_json},
 }};
 
-async function api(path, method = 'POST') {{
-  const res = await fetch(path, {{ method }});
+async function api(path, method = 'POST', body = null) {{
+  const options = {{ method }};
+  if (body) {{
+    options.headers = {{ 'Content-Type': 'application/json' }};
+    options.body = JSON.stringify(body);
+  }}
+  const res = await fetch(path, options);
   const data = await res.json();
   return data;
 }}
@@ -287,47 +297,187 @@ function updateStats(totalUsers, totalReqs) {{
   document.getElementById('total-reqs').textContent = totalReqs;
 }}
 
+const presets = [
+  '🤝 Friend',
+  '🏠 Family',
+  '💼 Colleague',
+  '👥 Relatives',
+  '👑 Boss',
+  '👤 Self',
+  '💻 Developer',
+  '⭐ VIP Client',
+  '🤖 Bot',
+  '🖥️ PC',
+  '🍎 Mac',
+  '🤖 Android',
+  '📱 iPhone',
+  '📟 iPad'
+];
+
+let globalUsers = [];
+
+window.activeRemarkInput = null;
+
+function updateGlobalDropdown(input) {{
+  const dropdown = document.getElementById('global-remark-dropdown');
+  if (!dropdown) return;
+  
+  const filterText = input.value.toLowerCase().trim();
+  
+  const existing = new Set();
+  for (const u of globalUsers) {{
+    if (u.remark && u.remark.trim() !== '') {{
+      existing.add(u.remark.trim());
+    }}
+  }}
+  
+  const allOptions = new Set([...presets, ...existing]);
+  
+  let html = '';
+  let count = 0;
+  for (const opt of allOptions) {{
+    if (filterText === '' || opt.toLowerCase().includes(filterText)) {{
+      html += '<div class="dropdown-item" onmousedown="window.selectGlobalOption(\'' + escapeHtml(opt) + '\')">' + escapeHtml(opt) + '</div>';
+      count++;
+    }}
+  }}
+  
+  if (count === 0) {{
+    dropdown.style.display = 'none';
+  }} else {{
+    dropdown.style.display = 'block';
+  }}
+  dropdown.innerHTML = html;
+}}
+
+function populateAllDropdowns(users) {{
+  globalUsers = users || [];
+}}
+
+function handleRemarkInput(input) {{
+  input.setAttribute('data-dirty', 'true');
+  updateGlobalDropdown(input);
+}}
+
+function showDropdown(input) {{
+  window.activeRemarkInput = input;
+  input.setAttribute('data-original-val', input.value);
+  input.setAttribute('data-dirty', 'false');
+  input.value = '';
+  
+  updateGlobalDropdown(input);
+  
+  const dropdown = document.getElementById('global-remark-dropdown');
+  if (dropdown) {{
+    const rect = input.getBoundingClientRect();
+    dropdown.style.left = (rect.left + window.scrollX) + 'px';
+    dropdown.style.top = (rect.bottom + window.scrollY + 2) + 'px';
+    dropdown.style.minWidth = '150px';
+    dropdown.style.width = rect.width + 'px';
+    dropdown.classList.add('show');
+  }}
+}}
+
+function hideDropdown(input) {{
+  setTimeout(() => {{
+    const dropdown = document.getElementById('global-remark-dropdown');
+    if (dropdown) {{
+      dropdown.classList.remove('show');
+      dropdown.style.display = 'none';
+    }}
+    if (input.getAttribute('data-dirty') !== 'true') {{
+      input.value = input.getAttribute('data-original-val') || '';
+    }}
+    if (window.activeRemarkInput === input) {{
+      window.activeRemarkInput = null;
+    }}
+  }}, 200);
+}}
+
+window.selectGlobalOption = (val) => {{
+  const input = window.activeRemarkInput;
+  if (input) {{
+    input.value = val;
+    input.setAttribute('data-dirty', 'true');
+    const sid = input.getAttribute('data-sid');
+    window.updateRemark(sid, val);
+  }}
+}};
+
 function updateTable(users) {{
   const tbody = document.getElementById('user-list');
   if (!users || users.length === 0) {{
-    tbody.innerHTML = '<tr><td colspan="9" class="empty">' + escapeHtml(i18n.adminEmpty) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">' + escapeHtml(i18n.adminEmpty) + '</td></tr>';
     return;
   }}
+  
+  let activeSid = null;
+  let activeVal = '';
+  let activeSelectionStart = 0;
+  let activeSelectionEnd = 0;
+  
+  if (document.activeElement && document.activeElement.classList.contains('remark-input')) {{
+    activeSid = document.activeElement.getAttribute('data-sid');
+    activeVal = document.activeElement.value;
+    activeSelectionStart = document.activeElement.selectionStart;
+    activeSelectionEnd = document.activeElement.selectionEnd;
+  }}
+  
+  globalUsers = users;
   
   let html = '';
   for (const u of users) {{
     const shortSid = u.sid;
     
     const statusBadge = u.approved
-      ? '<span class="badge badge-yes">✅ ' + escapeHtml(i18n.badgeApproved) + '</span>'
-      : '<span class="badge badge-no">⏳ ' + escapeHtml(i18n.badgePending) + '</span>';
-      
-    const approveBtn = u.approved
-      ? '<button class="btn btn-red btn-sm" onclick="revoke(event, \'' + escapeHtml(shortSid) + '\')">' + escapeHtml(i18n.btnRevoke) + '</button>'
-      : '<button class="btn btn-green btn-sm" onclick="approve(\'' + escapeHtml(shortSid) + '\')">' + escapeHtml(i18n.btnApprove) + '</button>';
+      ? '<span class="badge badge-yes clickable" onclick="revoke(event, \'' + escapeHtml(shortSid) + '\')">✅ ' + escapeHtml(i18n.badgeApproved) + '</span>'
+      : '<span class="badge badge-no clickable" onclick="approve(\'' + escapeHtml(shortSid) + '\')">⏳ ' + escapeHtml(i18n.badgePending) + '</span>';
       
     const lastSeenStr = formatDateTime(u.last_seen);
     const relativeSeen = formatRelativeTime(u.last_seen);
     const lastSeenDisplay = lastSeenStr + ' (' + relativeSeen + ')';
     
     const createdAtStr = formatDateTime(u.created_at);
+    const relativeCreated = formatRelativeTime(u.created_at);
+    const createdAtDisplay = createdAtStr + ' (' + relativeCreated + ')';
     
     const ip = u.last_ip || '-';
     const uaShort = shortUa(u.user_agent);
+    const remarkVal = (shortSid === activeSid) ? activeVal : (u.remark || '');
     
     html += '<tr>' +
       '<td class="mono">' + escapeHtml(shortSid) + '</td>' +
       '<td>' + escapeHtml(u.domain) + '</td>' +
-      '<td class="mono">' + escapeHtml(createdAtStr) + '</td>' +
+      '<td class="mono">' + escapeHtml(createdAtDisplay) + '</td>' +
       '<td>' + statusBadge + '</td>' +
       '<td class="mono">' + escapeHtml(ip) + '</td>' +
       '<td class="mono">' + escapeHtml(lastSeenDisplay) + '</td>' +
       '<td class="ua-cell" title="' + escapeHtml(u.user_agent) + '">' + escapeHtml(uaShort) + '</td>' +
       '<td class="mono">' + u.request_count + '</td>' +
-      '<td><div class="actions">' + approveBtn + '<button class="btn btn-gray btn-sm" onclick="remove(event, \'' + escapeHtml(shortSid) + '\')">' + escapeHtml(i18n.btnDelete) + '</button></div></td>' +
+      '<td>' +
+        '<div class="remark-container">' +
+          '<input type="text" class="remark-input" data-sid="' + escapeHtml(shortSid) + '" ' +
+            'onfocus="showDropdown(this)" onblur="hideDropdown(this)" oninput="handleRemarkInput(this)" ' +
+            'onchange="updateRemark(\'' + escapeHtml(shortSid) + '\', this.value)" value="' + escapeHtml(remarkVal) + '">' +
+          '<div class="remark-dropdown"></div>' +
+        '</div>' +
+      '</td>' +
+      '<td><button class="btn btn-gray btn-sm" onclick="remove(event, \'' + escapeHtml(shortSid) + '\')">' + escapeHtml(i18n.btnDelete) + '</button></td>' +
     '</tr>';
   }}
   tbody.innerHTML = html;
+  
+  populateAllDropdowns(users);
+  
+  if (activeSid) {{
+    const input = document.querySelector('.remark-input[data-sid="' + activeSid + '"]');
+    if (input) {{
+      input.focus();
+      input.value = activeVal;
+      input.setSelectionRange(activeSelectionStart, activeSelectionEnd);
+      showDropdown(input);
+    }}
+  }}
 }}
 
 async function loadData() {{
@@ -412,17 +562,13 @@ window.approve = async (sid) => {{
 }};
 
 window.revoke = async (event, sid) => {{
-  const isZh = document.documentElement.lang === 'zh';
-  const confirmText = isZh ? '确认撤销' : 'Confirm Revoke';
-  await handleConfirm(event, 'revoke_' + sid, confirmText, async () => {{
-    const data = await api('/api/users/' + encodeURIComponent(sid) + '/revoke');
-    if (data.ok) {{
-      showToast(i18n.toastRevoked);
-      await loadData();
-    }} else {{
-      showToast(i18n.toastFailed + (data.error ? ': ' + data.error : ''));
-    }}
-  }});
+  const data = await api('/api/users/' + encodeURIComponent(sid) + '/revoke');
+  if (data.ok) {{
+    showToast(i18n.toastRevoked);
+    await loadData();
+  }} else {{
+    showToast(i18n.toastFailed + (data.error ? ': ' + data.error : ''));
+  }}
 }};
 
 window.remove = async (event, sid) => {{
@@ -439,13 +585,26 @@ window.remove = async (event, sid) => {{
   }});
 }};
 
-// Auto reload every 10s if the tab is active and no confirmation is pending
+window.updateRemark = async (sid, val) => {{
+  const isZh = document.documentElement.lang === 'zh';
+  const data = await api('/api/users/' + encodeURIComponent(sid) + '/remark', 'POST', {{ remark: val }});
+  if (data.ok) {{
+    showToast(isZh ? '备注已更新' : 'Remark updated');
+    await loadData();
+  }} else {{
+    showToast(i18n.toastFailed + (data.error ? ': ' + data.error : ''));
+  }}
+}};
+
+// Auto reload every 10s if the tab is active, no confirmation is pending, and no input is focused
 setInterval(() => {{
-  if (!document.hidden && Object.keys(confirmStates).length === 0) {{
+  const isEditing = document.activeElement && document.activeElement.classList.contains('remark-input');
+  if (!document.hidden && Object.keys(confirmStates).length === 0 && !isEditing) {{
     loadData();
   }}
 }}, 10000);
 </script>
+<div id="global-remark-dropdown" class="remark-dropdown"></div>
 </body>
 </html>"#,
         lang_attr = lang_attr,
@@ -463,6 +622,7 @@ setInterval(() => {{
         admin_th_last_seen = s.admin_th_last_seen,
         admin_th_ua = s.admin_th_ua,
         admin_th_req_count = s.admin_th_req_count,
+        admin_th_remark = s.admin_th_remark,
         admin_th_actions = s.admin_th_actions,
         user_list = user_list,
         toast_approved_json = serde_json::to_string(s.toast_approved).unwrap(),
@@ -496,9 +656,9 @@ pub fn visitor_page(locale: Locale, title: &str, body: &str) -> String {
   .card {{ background: #1e293b; border-radius: 12px; padding: 2.5rem; max-width: 480px; width: 90%; box-shadow: 0 4px 24px rgba(0,0,0,0.3); text-align: center; }}
   h1 {{ font-size: 1.5rem; margin-bottom: 0.5rem; }}
   p {{ color: #94a3b8; margin: 0.5rem 0; line-height: 1.6; }}
-  .id-box {{ background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin: 1rem 0; font-family: monospace; font-size: 0.9rem; word-break: break-all; color: #38bdf8; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }}
-  .id-box span {{ flex: 1; text-align: left; }}
-  .copy-btn {{ background: #1e293b; border: 1px solid #3b82f6; color: #3b82f6; border-radius: 6px; padding: 0.35rem 0.75rem; cursor: pointer; font-size: 0.8rem; white-space: nowrap; transition: all 0.15s; }}
+  .id-box {{ background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin: 1rem 0; font-family: monospace; font-size: 0.9rem; word-break: break-all; color: #38bdf8; display: flex; align-items: center; justify-content: center; position: relative; }}
+  .id-box span {{ text-align: center; }}
+  .copy-btn {{ position: absolute; right: 1rem; background: #1e293b; border: 1px solid #3b82f6; color: #3b82f6; border-radius: 6px; padding: 0.35rem 0.75rem; cursor: pointer; font-size: 0.8rem; white-space: nowrap; transition: all 0.15s; }}
   .copy-btn:hover {{ background: #3b82f6; color: #fff; }}
   .copy-btn.done {{ background: #22c55e; border-color: #22c55e; color: #fff; }}
   .badge {{ display: inline-block; padding: 0.25rem 0.75rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }}
@@ -526,17 +686,56 @@ function copyId() {{
     }}, 2000);
   }});
 }}
-setInterval(() => {{
-  if (!document.hidden) {{
-    fetch(window.location.href, {{ method: 'HEAD' }})
-      .then(res => {{
-        if (res.status !== 401 && res.status !== 429) {{
-          location.reload();
-        }}
-      }})
-      .catch(e => {{}});
+(function() {{
+  const isZh = document.documentElement.lang === 'zh-CN';
+  const msgCheckingIn = isZh ? '将在 {{seconds}} 秒后自动检查...' : 'Checking in {{seconds}}s...';
+  const msgChecking = isZh ? '正在检查...' : 'Checking...';
+  const msgAuthenticated = isZh ? '认证成功！正在刷新...' : 'Authenticated! Refreshing...';
+  
+  const statusEl = document.getElementById('checkStatus');
+  if (!statusEl) return;
+  
+  let countdown = 10;
+  
+  function updateText() {{
+    statusEl.textContent = msgCheckingIn.replace('{{seconds}}', countdown);
   }}
-}}, 10000);
+  
+  async function performCheck() {{
+    statusEl.textContent = msgChecking;
+    try {{
+      const res = await fetch(window.location.href, {{ method: 'HEAD' }});
+      if (res.status !== 401 && res.status !== 429) {{
+        statusEl.textContent = msgAuthenticated;
+        statusEl.style.color = '#22c55e';
+        setTimeout(() => {{
+          location.reload();
+        }}, 1000);
+        return true;
+      }}
+    }} catch (e) {{}}
+    return false;
+  }}
+  
+  updateText();
+  
+  setInterval(async () => {{
+    if (document.hidden) return;
+    
+    countdown--;
+    if (countdown <= 0) {{
+      const success = await performCheck();
+      if (!success) {{
+        countdown = 10;
+        updateText();
+      }} else {{
+        countdown = 999999;
+      }}
+    }} else if (countdown < 99999) {{
+      updateText();
+    }}
+  }}, 1000);
+}})();
 </script>
 </body>
 </html>"#,
