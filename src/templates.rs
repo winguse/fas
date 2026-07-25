@@ -59,7 +59,7 @@ pub fn format_relative_time(locale: Locale, dt: chrono::DateTime<chrono::Utc>) -
     }
 }
 
-pub fn admin_table_rows(locale: Locale, users: &[User]) -> String {
+pub fn admin_table_rows(locale: Locale, users: &[User], available_rules: &[String]) -> String {
     let s = t(locale);
     if users.is_empty() {
         return format!(
@@ -73,11 +73,34 @@ pub fn admin_table_rows(locale: Locale, users: &[User]) -> String {
         .map(|u| {
             let short_sid = if u.sid.len() >= 6 { &u.sid[0..6] } else { &u.sid };
 
-            let status_badge = if u.approved {
-                format!("<span class=\"badge badge-yes clickable\" onclick=\"revoke(event, '{}')\">✅ {}</span>", short_sid, s.badge_approved)
-            } else {
-                format!("<span class=\"badge badge-no clickable\" onclick=\"approve('{}')\">⏳ {}</span>", short_sid, s.badge_pending)
-            };
+            let mut options_html = String::new();
+            let mut rule_found = false;
+            for r in available_rules {
+                let selected = if r == &u.acl_rule {
+                    rule_found = true;
+                    "selected"
+                } else {
+                    ""
+                };
+                options_html.push_str(&format!(
+                    r#"<option value="{}" {}>{}</option>"#,
+                    escape_html(r),
+                    selected,
+                    escape_html(r)
+                ));
+            }
+            if !rule_found && !u.acl_rule.is_empty() {
+                options_html.push_str(&format!(
+                    r#"<option value="{}" selected>{}</option>"#,
+                    escape_html(&u.acl_rule),
+                    escape_html(&u.acl_rule)
+                ));
+            }
+
+            let rule_dropdown = format!(
+                r#"<select class="filter-input rule-select" style="padding:0.25rem 0.4rem; font-size:0.75rem; width:130px;" onchange="changeUserRule('{}', this.value)">{}</select>"#,
+                short_sid, options_html
+            );
 
             let last_seen_str = u.last_seen.format("%Y-%m-%d %H:%M:%S").to_string();
             let relative_seen = format_relative_time(locale, u.last_seen);
@@ -108,9 +131,9 @@ pub fn admin_table_rows(locale: Locale, users: &[User]) -> String {
                 short_sid,
                 short_sid,
                 short_sid,
-                escape_html(&u.domain),
+                escape_html(&u.last_seen_domain),
                 created_at_display,
-                status_badge,
+                rule_dropdown,
                 escape_html(ip),
                 last_seen_display,
                 escape_html(&u.user_agent),
@@ -127,7 +150,14 @@ pub fn admin_table_rows(locale: Locale, users: &[User]) -> String {
         .join("")
 }
 
-pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_reqs: u64) -> String {
+pub fn admin_page(
+    locale: Locale,
+    user_list: &str,
+    total_users: usize,
+    total_reqs: u64,
+    acl_yaml: &str,
+    acl_rules: &[String],
+) -> String {
     let s = t(locale);
     let lang_attr = locale.html_lang();
 
@@ -142,7 +172,14 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }}
   .container {{ padding: 2rem; }}
-  h1 {{ font-size: 1.75rem; margin-bottom: 0.5rem; }}
+  h1 {{ font-size: 1.75rem; margin-bottom: 1rem; }}
+  
+  /* Tabs */
+  .nav-tabs {{ display: flex; gap: 0.5rem; margin-bottom: 1.5rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }}
+  .nav-tab {{ background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 0.5rem 1.25rem; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.15s; }}
+  .nav-tab:hover {{ background: #334155; color: #e2e8f0; }}
+  .nav-tab.active {{ background: #3b82f6; color: #fff; border-color: #3b82f6; }}
+  
   .stats-bar {{ display: flex; gap: 1.5rem; margin-bottom: 1.5rem; flex-wrap: wrap; }}
   .stat-chip {{ background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 0.5rem 1rem; font-size: 0.85rem; }}
   .stat-chip strong {{ color: #38bdf8; }}
@@ -195,78 +232,112 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
   .page-btn:hover:not(.disabled) {{ background: #334155; color: #e2e8f0; border-color: #475569; }}
   .page-btn.active {{ background: #3b82f6; color: #fff; border-color: #3b82f6; }}
   .page-btn.disabled {{ opacity: 0.4; cursor: not-allowed; }}
+  
+  /* Config Tab Editor Styles */
+  .config-container {{ background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; }}
+  .config-toolbar {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem; }}
+  .yaml-editor {{ width: 100%; height: 480px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem; color: #38bdf8; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.88rem; line-height: 1.5; outline: none; resize: vertical; }}
+  .yaml-editor:focus {{ border-color: #3b82f6; }}
+  .error-box {{ background: #ef444420; border: 1px solid #ef444480; color: #f87171; border-radius: 8px; padding: 0.75rem 1rem; margin-top: 1rem; font-family: monospace; font-size: 0.82rem; white-space: pre-wrap; }}
 </style>
 </head>
 <body>
 <div id="toast" class="toast"></div>
 <div class="container">
 <h1>{admin_heading}</h1>
-<div class="stats-bar">
-  <span class="stat-chip">{admin_total}: <strong id="total-users">{total_users}</strong></span>
-  <span class="stat-chip">{admin_total_req}: <strong id="total-reqs">{total_reqs}</strong><button class="btn btn-gray" style="padding: 0.1rem 0.4rem; margin-left: 0.5rem; font-size: 0.7rem; vertical-align: middle;" onclick="resetStats()">Reset</button></span>
+
+<!-- Navigation Tabs -->
+<div class="nav-tabs">
+  <button class="nav-tab active" id="tab-btn-users" onclick="switchTab('users')">{tab_users}</button>
+  <button class="nav-tab" id="tab-btn-config" onclick="switchTab('config')">{tab_config}</button>
 </div>
 
-<!-- Filter Bar -->
-<div class="filter-bar">
-  <div class="filter-group">
-    <input type="text" id="search-id" class="filter-input" placeholder="Search ID..." oninput="applyFilters()">
-    <input type="text" id="search-domain" class="filter-input" placeholder="Search Domain..." oninput="applyFilters()">
-    <select id="filter-status" class="filter-input" onchange="applyFilters()">
-      <option value="all">All Statuses</option>
-      <option value="approved">Approved Only</option>
-      <option value="pending">Pending Only</option>
-    </select>
-    <input type="text" id="search-ip" class="filter-input" placeholder="Search IP..." oninput="applyFilters()">
-    <input type="text" id="search-remark" class="filter-input" placeholder="Search Remark..." oninput="applyFilters()">
-    <input type="text" id="search-ua" class="filter-input" placeholder="Search User-Agent..." oninput="applyFilters()">
-    <button class="btn btn-gray" style="padding: 0.4rem 0.75rem; font-size: 0.8rem; border-radius: 6px; line-height: 1.2;" onclick="clearFilters()">Reset</button>
+<!-- Tab 1: Users & Visitors -->
+<div id="tab-users-content">
+  <div class="stats-bar">
+    <span class="stat-chip">{admin_total}: <strong id="total-users">{total_users}</strong></span>
+    <span class="stat-chip">{admin_total_req}: <strong id="total-reqs">{total_reqs}</strong><button class="btn btn-gray" style="padding: 0.1rem 0.4rem; margin-left: 0.5rem; font-size: 0.7rem; vertical-align: middle;" onclick="resetStats()">Reset</button></span>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="filter-bar">
+    <div class="filter-group">
+      <input type="text" id="search-id" class="filter-input" placeholder="Search ID..." oninput="applyFilters()">
+      <input type="text" id="search-domain" class="filter-input" placeholder="Search Domain..." oninput="applyFilters()">
+      <select id="filter-rule" class="filter-input" onchange="applyFilters()">
+        <option value="all">All ACL Rules</option>
+      </select>
+      <input type="text" id="search-ip" class="filter-input" placeholder="Search IP..." oninput="applyFilters()">
+      <input type="text" id="search-remark" class="filter-input" placeholder="Search Remark..." oninput="applyFilters()">
+      <input type="text" id="search-ua" class="filter-input" placeholder="Search User-Agent..." oninput="applyFilters()">
+      <button class="btn btn-gray" style="padding: 0.4rem 0.75rem; font-size: 0.8rem; border-radius: 6px; line-height: 1.2;" onclick="clearFilters()">Reset</button>
+    </div>
+  </div>
+
+  <!-- Batch Action Bar -->
+  <div id="batch-bar" class="batch-bar">
+    <span class="batch-info">Selected: <strong id="batch-count">0</strong> users</span>
+    <div class="batch-actions" style="display:flex; align-items:center; gap:0.5rem;">
+      <select id="batch-rule-select" class="filter-input" style="width: auto; padding: 0.35rem 0.5rem;">
+      </select>
+      <button class="btn btn-green btn-sm" onclick="batchAssignRule()">Apply Rule</button>
+      <button id="btn-batch-delete" class="btn btn-gray btn-sm" onclick="batchDelete(event)">🗑️ Delete Selected</button>
+    </div>
+  </div>
+
+  <div style="overflow-x:auto">
+  <table>
+  <thead>
+  <tr>
+    <th style="width: 40px;"><input type="checkbox" id="select-all-checkbox" onchange="toggleSelectAll(this)"></th>
+    <th class="sortable" data-col="sid" onclick="handleSortClick('sid')">{admin_th_user}<span class="sort-icon" id="sort-icon-sid"></span></th>
+    <th class="sortable" data-col="last_seen_domain" onclick="handleSortClick('last_seen_domain')">{admin_th_domain}<span class="sort-icon" id="sort-icon-last_seen_domain"></span></th>
+    <th class="sortable" data-col="created_at" onclick="handleSortClick('created_at')">{admin_th_created}<span class="sort-icon" id="sort-icon-created_at"> ▼</span></th>
+    <th class="sortable" data-col="acl_rule" onclick="handleSortClick('acl_rule')">{admin_th_status}<span class="sort-icon" id="sort-icon-acl_rule"></span></th>
+    <th class="sortable" data-col="last_ip" onclick="handleSortClick('last_ip')">{admin_th_ip}<span class="sort-icon" id="sort-icon-last_ip"></span></th>
+    <th class="sortable" data-col="last_seen" onclick="handleSortClick('last_seen')">{admin_th_last_seen}<span class="sort-icon" id="sort-icon-last_seen"></span></th>
+    <th class="sortable" data-col="user_agent" onclick="handleSortClick('user_agent')">{admin_th_ua}<span class="sort-icon" id="sort-icon-user_agent"></span></th>
+    <th class="sortable" data-col="request_count" onclick="handleSortClick('request_count')">{admin_th_req_count}<span class="sort-icon" id="sort-icon-request_count"></span></th>
+    <th class="sortable" data-col="remark" onclick="handleSortClick('remark')">{admin_th_remark}<span class="sort-icon" id="sort-icon-remark"></span></th>
+    <th>{admin_th_actions}</th>
+  </tr>
+  </thead>
+  <tbody id="user-list">
+  {user_list}
+  </tbody>
+  </table>
+  </div>
+
+  <!-- Pagination Bar -->
+  <div class="pagination-bar">
+    <div class="pagination-info" id="pagination-info">Showing 0 to 0 of 0 entries</div>
+    <div style="display: flex; align-items: center; gap: 1rem;">
+      <select class="filter-input" style="width: auto; padding: 0.35rem 0.5rem;" onchange="changePageSize(this.value)">
+        <option value="10">10 per page</option>
+        <option value="25" selected>25 per page</option>
+        <option value="50">50 per page</option>
+        <option value="100">100 per page</option>
+      </select>
+      <div class="pagination-controls" id="pagination-controls"></div>
+    </div>
   </div>
 </div>
 
-<!-- Batch Action Bar -->
-<div id="batch-bar" class="batch-bar">
-  <span class="batch-info">Selected: <strong id="batch-count">0</strong> users</span>
-  <div class="batch-actions">
-    <button class="btn btn-green btn-sm" onclick="batchApprove()">✅ Approve Selected</button>
-    <button class="btn btn-red btn-sm" onclick="batchRevoke()">⏳ Revoke Selected</button>
-    <button id="btn-batch-delete" class="btn btn-gray btn-sm" onclick="batchDelete(event)">🗑️ Delete Selected</button>
-  </div>
-</div>
+<!-- Tab 2: ACL & Cookie Configuration -->
+<div id="tab-config-content" style="display:none;">
+  <div class="config-container">
+    <div class="config-toolbar">
+      <div style="display:flex; align-items:center; gap:0.75rem;">
+        <span id="config-status-badge" class="badge badge-yes">✅ Valid YAML & Regex</span>
+        <span style="font-size:0.8rem; color:#94a3b8;">Edit ACL rules and Cookie domain mappings below</span>
+      </div>
+      <div>
+        <button id="save-config-btn" class="btn btn-green" style="padding:0.45rem 1rem; font-size:0.85rem;" onclick="saveConfig()">💾 Save Configuration</button>
+      </div>
+    </div>
 
-<div style="overflow-x:auto">
-<table>
-<thead>
-<tr>
-  <th style="width: 40px;"><input type="checkbox" id="select-all-checkbox" onchange="toggleSelectAll(this)"></th>
-  <th class="sortable" data-col="sid" onclick="handleSortClick('sid')">{admin_th_user}<span class="sort-icon" id="sort-icon-sid"></span></th>
-  <th class="sortable" data-col="domain" onclick="handleSortClick('domain')">{admin_th_domain}<span class="sort-icon" id="sort-icon-domain"></span></th>
-  <th class="sortable" data-col="created_at" onclick="handleSortClick('created_at')">{admin_th_created}<span class="sort-icon" id="sort-icon-created_at"> ▼</span></th>
-  <th class="sortable" data-col="approved" onclick="handleSortClick('approved')">{admin_th_status}<span class="sort-icon" id="sort-icon-approved"></span></th>
-  <th class="sortable" data-col="last_ip" onclick="handleSortClick('last_ip')">{admin_th_ip}<span class="sort-icon" id="sort-icon-last_ip"></span></th>
-  <th class="sortable" data-col="last_seen" onclick="handleSortClick('last_seen')">{admin_th_last_seen}<span class="sort-icon" id="sort-icon-last_seen"></span></th>
-  <th class="sortable" data-col="user_agent" onclick="handleSortClick('user_agent')">{admin_th_ua}<span class="sort-icon" id="sort-icon-user_agent"></span></th>
-  <th class="sortable" data-col="request_count" onclick="handleSortClick('request_count')">{admin_th_req_count}<span class="sort-icon" id="sort-icon-request_count"></span></th>
-  <th class="sortable" data-col="remark" onclick="handleSortClick('remark')">{admin_th_remark}<span class="sort-icon" id="sort-icon-remark"></span></th>
-  <th>{admin_th_actions}</th>
-</tr>
-</thead>
-<tbody id="user-list">
-{user_list}
-</tbody>
-</table>
-</div>
-
-<!-- Pagination Bar -->
-<div class="pagination-bar">
-  <div class="pagination-info" id="pagination-info">Showing 0 to 0 of 0 entries</div>
-  <div style="display: flex; align-items: center; gap: 1rem;">
-    <select class="filter-input" style="width: auto; padding: 0.35rem 0.5rem;" onchange="changePageSize(this.value)">
-      <option value="10">10 per page</option>
-      <option value="25" selected>25 per page</option>
-      <option value="50">50 per page</option>
-      <option value="100">100 per page</option>
-    </select>
-    <div class="pagination-controls" id="pagination-controls"></div>
+    <textarea id="yaml-editor" class="yaml-editor" spellcheck="false" oninput="validateYamlDebounced()">{acl_yaml}</textarea>
+    <div id="yaml-error-box" class="error-box" style="display:none;"></div>
   </div>
 </div>
 
@@ -286,6 +357,27 @@ const i18n = {{
   btnApprove: {btn_approve_json},
   btnDelete: {btn_delete_json},
 }};
+
+let availableRules = {acl_rules_json};
+
+function switchTab(tabName) {{
+  const usersTabBtn = document.getElementById('tab-btn-users');
+  const configTabBtn = document.getElementById('tab-btn-config');
+  const usersContent = document.getElementById('tab-users-content');
+  const configContent = document.getElementById('tab-config-content');
+
+  if (tabName === 'users') {{
+    usersTabBtn.classList.add('active');
+    configTabBtn.classList.remove('active');
+    usersContent.style.display = 'block';
+    configContent.style.display = 'none';
+  }} else {{
+    configTabBtn.classList.add('active');
+    usersTabBtn.classList.remove('active');
+    configContent.style.display = 'block';
+    usersContent.style.display = 'none';
+  }}
+}}
 
 async function api(path, method = 'POST', body = null) {{
   const options = {{ method }};
@@ -421,10 +513,6 @@ function updateGlobalDropdown(input) {{
   dropdown.innerHTML = html;
 }}
 
-function populateAllDropdowns(users) {{
-  globalUsers = users || [];
-}}
-
 function handleRemarkInput(input) {{
   input.setAttribute('data-dirty', 'true');
   updateGlobalDropdown(input);
@@ -475,25 +563,41 @@ window.selectGlobalOption = (val) => {{
   }}
 }};
 
-function updateTable(users) {{
-  allUsers = users || [];
-  globalUsers = allUsers;
-  applyFilters();
+function updateRuleSelects() {{
+  const filterSelect = document.getElementById('filter-rule');
+  if (filterSelect) {{
+    const currentVal = filterSelect.value;
+    let html = '<option value="all">All ACL Rules</option>';
+    for (const r of availableRules) {{
+      html += '<option value="' + escapeHtml(r) + '">' + escapeHtml(r) + '</option>';
+    }}
+    filterSelect.innerHTML = html;
+    filterSelect.value = currentVal;
+  }}
+
+  const batchSelect = document.getElementById('batch-rule-select');
+  if (batchSelect) {{
+    let html = '';
+    for (const r of availableRules) {{
+      html += '<option value="' + escapeHtml(r) + '">' + escapeHtml(r) + '</option>';
+    }}
+    batchSelect.innerHTML = html;
+  }}
 }}
 
 function applyFilters() {{
   const searchId = document.getElementById('search-id').value.toLowerCase().trim();
   const searchDomain = document.getElementById('search-domain').value.toLowerCase().trim();
-  const filterStatus = document.getElementById('filter-status').value;
+  const filterRule = document.getElementById('filter-rule').value;
   const searchIp = document.getElementById('search-ip').value.toLowerCase().trim();
   const searchRemark = document.getElementById('search-remark').value.toLowerCase().trim();
   const searchUa = document.getElementById('search-ua').value.toLowerCase().trim();
   
   filteredUsers = allUsers.filter(u => {{
     if (searchId && !u.sid.toLowerCase().includes(searchId)) return false;
-    if (searchDomain && !u.domain.toLowerCase().includes(searchDomain)) return false;
-    if (filterStatus === 'approved' && !u.approved) return false;
-    if (filterStatus === 'pending' && u.approved) return false;
+    const userDomain = u.last_seen_domain || u.domain || '';
+    if (searchDomain && !userDomain.toLowerCase().includes(searchDomain)) return false;
+    if (filterRule !== 'all' && u.acl_rule !== filterRule) return false;
     if (searchIp && !u.last_ip.toLowerCase().includes(searchIp)) return false;
     if (searchRemark && !u.remark.toLowerCase().includes(searchRemark)) return false;
     if (searchUa && !u.user_agent.toLowerCase().includes(searchUa)) return false;
@@ -508,7 +612,7 @@ function applyFilters() {{
 function clearFilters() {{
   document.getElementById('search-id').value = '';
   document.getElementById('search-domain').value = '';
-  document.getElementById('filter-status').value = 'all';
+  document.getElementById('filter-rule').value = 'all';
   document.getElementById('search-ip').value = '';
   document.getElementById('search-remark').value = '';
   document.getElementById('search-ua').value = '';
@@ -551,7 +655,7 @@ function applySort() {{
 }}
 
 function updateSortIcons() {{
-  const ids = ['sid', 'domain', 'created_at', 'approved', 'last_ip', 'last_seen', 'user_agent', 'request_count', 'remark'];
+  const ids = ['sid', 'last_seen_domain', 'created_at', 'acl_rule', 'last_ip', 'last_seen', 'user_agent', 'request_count', 'remark'];
   for (const id of ids) {{
     const el = document.getElementById('sort-icon-' + id);
     if (el) {{
@@ -594,9 +698,18 @@ function renderTablePage() {{
     const shortSid = u.sid;
     const isSelected = selectedSids.has(shortSid);
     
-    const statusBadge = u.approved
-      ? '<span class="badge badge-yes clickable" onclick="revoke(event, \'' + escapeHtml(shortSid) + '\')">✅ ' + escapeHtml(i18n.badgeApproved) + '</span>'
-      : '<span class="badge badge-no clickable" onclick="approve(\'' + escapeHtml(shortSid) + '\')">⏳ ' + escapeHtml(i18n.badgePending) + '</span>';
+    let optionsHtml = '';
+    let ruleFound = false;
+    for (const r of availableRules) {{
+      const isSel = (r === u.acl_rule);
+      if (isSel) ruleFound = true;
+      optionsHtml += '<option value="' + escapeHtml(r) + '" ' + (isSel ? 'selected' : '') + '>' + escapeHtml(r) + '</option>';
+    }}
+    if (!ruleFound && u.acl_rule) {{
+      optionsHtml += '<option value="' + escapeHtml(u.acl_rule) + '" selected>' + escapeHtml(u.acl_rule) + '</option>';
+    }}
+    
+    const ruleSelect = '<select class="filter-input rule-select" style="padding:0.25rem 0.4rem; font-size:0.75rem; width:130px;" onchange="changeUserRule(\'' + escapeHtml(shortSid) + '\', this.value)">' + optionsHtml + '</select>';
       
     const lastSeenStr = formatDateTime(u.last_seen);
     const relativeSeen = formatRelativeTime(u.last_seen);
@@ -609,13 +722,14 @@ function renderTablePage() {{
     const ip = u.last_ip || '-';
     const uaShort = shortUa(u.user_agent);
     const remarkVal = (shortSid === activeSid) ? activeVal : (u.remark || '');
+    const displayDomain = u.last_seen_domain || u.domain || '-';
     
     html += '<tr>' +
       '<td><input type="checkbox" class="user-checkbox" data-sid="' + escapeHtml(shortSid) + '" ' + (isSelected ? 'checked' : '') + ' onchange="toggleSelectSid(\'' + escapeHtml(shortSid) + '\', this.checked)"></td>' +
       '<td class="mono">' + escapeHtml(shortSid) + '</td>' +
-      '<td>' + escapeHtml(u.domain) + '</td>' +
+      '<td>' + escapeHtml(displayDomain) + '</td>' +
       '<td class="mono">' + escapeHtml(createdAtDisplay) + '</td>' +
-      '<td>' + statusBadge + '</td>' +
+      '<td>' + ruleSelect + '</td>' +
       '<td class="mono">' + escapeHtml(ip) + '</td>' +
       '<td class="mono">' + escapeHtml(lastSeenDisplay) + '</td>' +
       '<td class="ua-cell" title="' + escapeHtml(u.user_agent) + '">' + escapeHtml(uaShort) + '</td>' +
@@ -668,7 +782,6 @@ function toggleSelectAll(checkbox) {{
   renderTablePage();
 }}
 
-// Helper function to return visible short user sids of the current page
 function getVisibleSids() {{
   const startIndex = (currentPage - 1) * pageSize;
   const endIndex = Math.min(startIndex + pageSize, filteredUsers.length);
@@ -770,35 +883,29 @@ function updateBatchBar() {{
   }}
 }}
 
-async function batchApprove() {{
-  if (selectedSids.size === 0) return;
-  const sids = Array.from(selectedSids);
+async function changeUserRule(sid, rule) {{
   const isZh = document.documentElement.lang === 'zh';
-  showToast(isZh ? '正在批量许可...' : 'Batch approving...');
-  
-  try {{
-    const promises = sids.map(sid => api('/api/users/' + encodeURIComponent(sid) + '/approve', 'POST'));
-    const results = await Promise.all(promises);
-    const successCount = results.filter(r => r.ok).length;
-    showToast(isZh ? '成功许可了 ' + successCount + ' 个用户' : 'Successfully approved ' + successCount + ' users');
-    selectedSids.clear();
+  const data = await api('/api/users/' + encodeURIComponent(sid) + '/rule', 'POST', {{ acl_rule: rule }});
+  if (data.ok) {{
+    showToast(isZh ? 'ACL 规则已更新' : 'ACL Rule updated');
     await loadData();
-  }} catch (err) {{
-    showToast(i18n.toastFailed);
+  }} else {{
+    showToast(i18n.toastFailed + (data.error ? ': ' + data.error : ''));
   }}
 }}
 
-async function batchRevoke() {{
+async function batchAssignRule() {{
   if (selectedSids.size === 0) return;
+  const rule = document.getElementById('batch-rule-select').value;
   const sids = Array.from(selectedSids);
   const isZh = document.documentElement.lang === 'zh';
-  showToast(isZh ? '正在批量撤销...' : 'Batch revoking...');
+  showToast(isZh ? '正在更新 ACL 规则...' : 'Updating ACL rules...');
   
   try {{
-    const promises = sids.map(sid => api('/api/users/' + encodeURIComponent(sid) + '/revoke', 'POST'));
+    const promises = sids.map(sid => api('/api/users/' + encodeURIComponent(sid) + '/rule', 'POST', {{ acl_rule: rule }}));
     const results = await Promise.all(promises);
     const successCount = results.filter(r => r.ok).length;
-    showToast(isZh ? '成功撤销了 ' + successCount + ' 个用户' : 'Successfully revoked ' + successCount + ' users');
+    showToast(isZh ? '成功更新了 ' + successCount + ' 个用户的 ACL 规则' : 'Successfully updated ' + successCount + ' users');
     selectedSids.clear();
     await loadData();
   }} catch (err) {{
@@ -841,12 +948,78 @@ window.resetStats = async () => {{
   }}
 }};
 
+let validateTimer = null;
+
+function validateYamlDebounced() {{
+  clearTimeout(validateTimer);
+  validateTimer = setTimeout(performYamlValidation, 300);
+}}
+
+async function performYamlValidation() {{
+  const editor = document.getElementById('yaml-editor');
+  const badge = document.getElementById('config-status-badge');
+  const errBox = document.getElementById('yaml-error-box');
+  const saveBtn = document.getElementById('save-config-btn');
+  const isZh = document.documentElement.lang === 'zh';
+
+  if (!editor) return;
+  const yamlText = editor.value;
+
+  try {{
+    const res = await api('/api/config/validate', 'POST', {{ yaml: yamlText }});
+    if (res.ok) {{
+      badge.textContent = isZh ? '✅ 语法正确 (YAML & Regex)' : '✅ Valid YAML & Regex';
+      badge.className = 'badge badge-yes';
+      errBox.style.display = 'none';
+      errBox.textContent = '';
+      if (saveBtn) saveBtn.disabled = false;
+      if (res.rules && Array.isArray(res.rules)) {{
+        availableRules = res.rules;
+        updateRuleSelects();
+      }}
+    }} else {{
+      badge.textContent = isZh ? '❌ 语法或正则错误' : '❌ Syntax / Regex Error';
+      badge.className = 'badge badge-no';
+      errBox.style.display = 'block';
+      errBox.textContent = res.error || 'Unknown error';
+      if (saveBtn) saveBtn.disabled = true;
+    }}
+  }} catch (err) {{
+    badge.textContent = isZh ? '❌ 校验失败' : '❌ Validation Failed';
+    badge.className = 'badge badge-no';
+    errBox.style.display = 'block';
+    errBox.textContent = String(err);
+    if (saveBtn) saveBtn.disabled = true;
+  }}
+}}
+
+async function saveConfig() {{
+  const editor = document.getElementById('yaml-editor');
+  const isZh = document.documentElement.lang === 'zh';
+  if (!editor) return;
+
+  showToast(isZh ? '正在保存配置...' : 'Saving configuration...');
+  const res = await api('/api/config', 'POST', {{ yaml: editor.value }});
+  if (res.ok) {{
+    showToast(isZh ? '✅ 配置保存成功' : '✅ Configuration saved');
+    await loadData();
+  }} else {{
+    showToast((isZh ? '❌ 保存失败: ' : '❌ Save failed: ') + (res.error || ''));
+  }}
+}}
+
 async function loadData() {{
   try {{
-    const [usersRes, statsRes] = await Promise.all([
+    const [usersRes, statsRes, configRes] = await Promise.all([
       api('/api/users', 'GET'),
-      api('/api/stats', 'GET')
+      api('/api/stats', 'GET'),
+      api('/api/config', 'GET')
     ]);
+    
+    if (configRes.ok && configRes.rules) {{
+      availableRules = configRes.rules;
+      updateRuleSelects();
+    }}
     
     if (usersRes.ok && statsRes.ok) {{
       updateStats(statsRes.totalUsers, statsRes.totalReqs);
@@ -914,26 +1087,6 @@ async function handleConfirm(event, key, confirmText, callback) {{
   }}
 }}
 
-window.approve = async (sid) => {{
-  const data = await api('/api/users/' + encodeURIComponent(sid) + '/approve');
-  if (data.ok) {{
-    showToast(i18n.toastApproved);
-    await loadData();
-  }} else {{
-    showToast(i18n.toastFailed + (data.error ? ': ' + data.error : ''));
-  }}
-}};
-
-window.revoke = async (event, sid) => {{
-  const data = await api('/api/users/' + encodeURIComponent(sid) + '/revoke');
-  if (data.ok) {{
-    showToast(i18n.toastRevoked);
-    await loadData();
-  }} else {{
-    showToast(i18n.toastFailed + (data.error ? ': ' + data.error : ''));
-  }}
-}};
-
 window.remove = async (event, sid) => {{
   const isZh = document.documentElement.lang === 'zh';
   const confirmText = isZh ? '确认删除' : 'Confirm Delete';
@@ -959,11 +1112,12 @@ window.updateRemark = async (sid, val) => {{
   }}
 }};
 
+updateRuleSelects();
 loadData();
 
 // Auto reload every 10s if the tab is active, no confirmation is pending, and no input is focused
 setInterval(() => {{
-  const isEditing = document.activeElement && document.activeElement.classList.contains('remark-input');
+  const isEditing = document.activeElement && (document.activeElement.classList.contains('remark-input') || document.activeElement.id === 'yaml-editor');
   if (!document.hidden && Object.keys(confirmStates).length === 0 && !isEditing) {{
     loadData();
   }}
@@ -975,6 +1129,8 @@ setInterval(() => {{
         lang_attr = lang_attr,
         admin_title = s.admin_title,
         admin_heading = s.admin_heading,
+        tab_users = s.tab_users,
+        tab_config = s.tab_config,
         admin_total = s.admin_total,
         total_users = total_users,
         admin_total_req = s.admin_total_req,
@@ -990,6 +1146,7 @@ setInterval(() => {{
         admin_th_remark = s.admin_th_remark,
         admin_th_actions = s.admin_th_actions,
         user_list = user_list,
+        acl_yaml = escape_html(acl_yaml),
         toast_approved_json = serde_json::to_string(s.toast_approved).unwrap(),
         toast_revoked_json = serde_json::to_string(s.toast_revoked).unwrap(),
         toast_deleted_json = serde_json::to_string(s.toast_deleted).unwrap(),
@@ -1002,6 +1159,7 @@ setInterval(() => {{
         btn_revoke_json = serde_json::to_string(s.btn_revoke).unwrap(),
         btn_approve_json = serde_json::to_string(s.btn_approve).unwrap(),
         btn_delete_json = serde_json::to_string(s.btn_delete).unwrap(),
+        acl_rules_json = serde_json::to_string(acl_rules).unwrap(),
     )
 }
 

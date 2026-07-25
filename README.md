@@ -1,18 +1,22 @@
 # FAS — Forward Auth Service
 
-FAS (Forward Auth Service) is a lightweight visitor access control service designed specifically for Traefik's ForwardAuth middleware. Written in Rust using the `axum` web framework, it provides visitor registration, rate-limiting, and an administrative dashboard to manage visitors.
+FAS (Forward Auth Service) is a lightweight visitor access control service designed specifically for Traefik's ForwardAuth middleware. Written in Rust using the `axum` web framework, it provides visitor registration, granular **ACL control (using regular expressions)**, **cookie domain scope control**, rate-limiting, and an administrative dashboard to manage visitors and configuration.
 
 ## Features
 
 - **Forward Auth Middleware Compatible**: Inspects and intercepts traffic via the standard `/_auth` route.
+- **Granular ACL Control**: Define access control rules by HTTP Method, Domain, and URL Path using regular expressions (Regex).
+  - **Deny-First Priority**: Deny rules take precedence over allow rules.
+  - **Default Fallback Rules**: `allow_all` (allow everything) and `deny_all` (deny everything) are automatically initialized.
+- **Cookie Domain Scope Control**:
+  - **Default**: Omit the `Domain` attribute in `Set-Cookie` headers, restricting cookies strictly to exact host matches (excluding subdomains).
+  - **Configurable Scope Mapping**: Map domain regex patterns to parent domain levels (e.g., `^.*\.b\.a\.com$: 1` writes `Domain=a.com`) or explicit domain strings.
+- **YAML Configuration & Live Admin Editor**: Stored in standard YAML (`acl.yaml`). The Admin Panel includes a tab with a live editor featuring YAML syntax & regex linting and validation.
+- **User Expiration (`expire_at`)**: Tracks visitor expiration timestamp `expire_at`. If missing, it is automatically computed based on default TTLs. Expired users are automatically purged by the background maintenance job.
 - **In-Memory Store with Debounced Persistence**: Fast lookups with asynchronous JSONL persistence, debouncing disk writes (at most once every 30s) to maximize throughput and minimize disk wear.
-- **Graceful Shutdown**: Intercepts `SIGTERM` / `SIGINT` signals to flush any unsaved database records before exiting.
-- **Automatic Expiration (TTL)**:
-  - **Soft TTL**: Automatically purges unapproved visitor records older than 1 hour.
-  - **Hard TTL**: Automatically purges all records older than 30 days.
 - **IP-Based Rate Limiting**: Limit unapproved requests to 1 request per 5 seconds per IP, returning a `429 Too Many Requests` page with an interactive countdown timer.
 - **Multi-lingual Support**: Automatically detects language preferences (`Accept-Language` headers) and serves pages in English (`en`) or Chinese (`zh-CN`).
-- **Secure Dashboard**: Manage visitor approval status, see real-time requests counter, last IP, and user-agent strings on `/`.
+- **Secure Dashboard**: Tabbed administrative interface to manage visitor ACL rules, search/filter users, and edit ACL/Cookie YAML configuration.
 - **Secure Runtime Container**: Multi-arch Docker images built on secure, ultra-minimal `gcr.io/distroless/cc-debian12`.
 
 ---
@@ -20,29 +24,77 @@ FAS (Forward Auth Service) is a lightweight visitor access control service desig
 ## Architecture and Code Modules
 
 The application is structured cleanly:
-- `src/main.rs`: Configures logging, spawns scheduler loops (saving, purging, and rate-limit cleanups), and sets up the server.
+- `src/main.rs`: Configures logging, spawns background tasks (saving, purging, rate-limit cleanup), and sets up Axum router.
 - `src/config.rs`: Defines environment configuration settings.
-- `src/store.rs`: Manages in-memory storage, file synchronization, record purging, and rate limit rules.
-- `src/handlers.rs`: Contains Axum handlers for HTTP APIs, auth validation, and dashboard routing.
-- `src/templates.rs`: Standard styling templates for visitor cards, rate-limiting counters, and administrative lists.
-- `src/i18n.rs`: Handles localization dictionaries and header parses.
+- `src/acl.rs`: Core ACL engine, regex pattern compilation, YAML validation, and cookie domain scope resolution.
+- `src/store.rs`: Manages in-memory user data, `expire_at` calculation, JSONL persistence, and TTL purging.
+- `src/handlers.rs`: Axum handlers for `/_auth`, config validation/saving, stats, user management, and admin UI.
+- `src/templates.rs`: UI templates for visitor cards, rate-limiting pages, and the tabbed admin dashboard.
+- `src/i18n.rs`: Handles localization dictionaries (English & Chinese).
 
 ---
 
 ## Configuration
 
-You can configure FAS by setting the following environment variables:
+### Environment Variables
 
 | Environment Variable | Description | Default Value |
 | :--- | :--- | :--- |
 | `FAS_PORT` | Port the web server binds to | `8080` |
-| `FAS_DATA_FILE` | Path where data is stored in JSONL format | `/data/fas.jsonl` |
-| `FAS_COOKIE_MAX_AGE` | Duration of the session cookie `fas_sid` in seconds | `7776000` (90 days) |
-| `FAS_RECORD_TTL_SECS` | Hard expiration for any record in seconds | `2592000` (30 days) |
-| `FAS_UNAPPROVED_TTL_SECS` | Soft expiration for unapproved visitor IDs in seconds | `3600` (1 hour) |
+| `FAS_DATA_FILE` | Path where user data is stored in JSONL format | `/data/fas.jsonl` |
+| `FAS_ACL_FILE` | Path where ACL & Cookie YAML configuration is stored | `/data/acl.yaml` |
+| `FAS_COOKIE_MAX_AGE` | Duration of the session cookie `fas_sid` in seconds (also defines record retention for allowed users) | `7776000` (90 days) |
+| `FAS_UNAPPROVED_TTL_SECS` | Soft expiration for unapproved/denied visitor IDs in seconds | `3600` (1 hour) |
 | `FAS_PURGE_INTERVAL_SECS` | Interval at which database TTL purges run | `3600` (1 hour) |
 | `FAS_RATE_LIMIT_WINDOW_SECS`| Minimum interval between requests for unapproved visitors | `5` (5 seconds) |
 | `FAS_SAVE_INTERVAL_SECS` | Throttle time before saving dirty state to disk | `30` (30 seconds) |
+
+---
+
+## ACL & Cookie Configuration Example (`acl.yaml`)
+
+The `acl.yaml` file defines cookie domain scope rules and user ACL rules:
+
+```yaml
+# Cookie Domain Scope Mappings
+# Keys are regex patterns matching the request host.
+# Default behavior (if request host does not match any regex):
+# No Domain parameter is included in the Set-Cookie header (restricting cookie to exact host match).
+# Values MUST be integer levels N (validated >= 1 and <= current domain levels).
+cookie_domains:
+  "^.*\\.b\\.a\\.com$": 1                  # Matches foo.b.a.com -> Domain=a.com
+  "^.*\\.sub\\.internal\\.net$": 2         # Matches app.sub.internal.net -> Domain=internal.net
+
+# ACL Rule Definitions (Regex Patterns)
+acl_rules:
+  allow_all:
+    allow:
+      - method: ".*"
+        domain: ".*"
+        path: ".*"
+
+  deny_all:
+    deny:
+      - method: ".*"
+        domain: ".*"
+        path: ".*"
+
+  developer_access:
+    allow:
+      - method: "^(GET|HEAD)$"
+        domain: "^.*\\.dev\\.example\\.com$"
+        path: "^/api/.*$"
+      - method: "^POST$"
+        domain: "^dev\\.example\\.com$"
+        path: "^/api/v1/.*$"
+    deny:
+      - method: ".*"
+        domain: ".*"
+        path: "^/admin/.*$"
+      - method: "^DELETE$"
+        domain: ".*"
+        path: ".*"
+```
 
 ---
 
@@ -78,13 +130,9 @@ docker run -d \
   -p 8080:8080 \
   -v /var/lib/fas-data:/data \
   -e FAS_DATA_FILE=/data/fas.jsonl \
+  -e FAS_ACL_FILE=/data/acl.yaml \
   --name fas \
   ghcr.io/winguse/fas:latest
-```
-
-Alternatively, to build the Docker image locally:
-```bash
-docker build -t ghcr.io/winguse/fas:latest .
 ```
 
 ---
@@ -112,7 +160,6 @@ Attach the middleware to any router that requires visitor approval.
 ```yaml
 http:
   routers:
-    # Protect your main service
     my-app-router:
       rule: "Host(`app.example.com`)"
       service: my-app-service
@@ -127,25 +174,14 @@ http:
 ### Option A: Restrict Admin Access at Proxy Level (Recommended)
 Keep the administrator interface `/` and APIs `/api/*` protected by restricting them to local networks, VPNs, or requiring mTLS certificate verification.
 
-```yaml
-http:
-  routers:
-    # Admin Panel router protected by mTLS
-    fas-admin-router:
-      rule: "Host(`fas-admin.example.com`)"
-      service: fas-admin-service
-      tls:
-        options: mtls-only # reference your Traefik mTLS configuration here
-```
+### Option B: Bootstrap Admin Session via API
+If the admin dashboard is placed behind `fas-auth`, assign your session cookie an allowed rule (`allow_all`) via `curl`:
 
-### Option B: Protect the Admin Panel using FAS itself
-You can choose to place the admin dashboard `/` behind the `fas-auth` middleware as well. However, this creates a "chicken-and-egg" bootstrap problem: you cannot access the dashboard to approve your own session.
-
-To approve the first administrator session (or approve visitors directly from the command line):
-
-1. Access the application in your browser to generate a session cookie, and copy your visitor UUID from the pending approval page.
-2. Run a `curl` command from your host machine (assuming port 8080 is mapped to your host) to approve that UUID:
+1. Access the application in your browser to generate a session cookie, and copy your visitor ID from the pending approval page.
+2. Run a `curl` command from your host machine to assign the `allow_all` ACL rule to your session ID:
    ```bash
-   curl -X POST http://localhost:8080/api/users/<your-uuid>/approve
+   curl -X POST http://localhost:8080/api/users/<your-uuid>/rule \
+     -H "Content-Type: application/json" \
+     -d '{"acl_rule": "allow_all"}'
    ```
-3. Refresh your browser page. Your session is now approved, and you can access the admin dashboard to approve other visitors.
+3. Refresh your browser page. Your session is now authorized, and you can manage visitors and ACL rules from the Admin dashboard.

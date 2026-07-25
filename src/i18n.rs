@@ -64,6 +64,8 @@ pub struct I18nStrings {
     pub rate_limit_btn: &'static str,
     pub copy_btn: &'static str,
     pub copied: &'static str,
+    pub tab_users: &'static str,
+    pub tab_config: &'static str,
 }
 
 pub const EN: I18nStrings = I18nStrings {
@@ -78,11 +80,11 @@ pub const EN: I18nStrings = I18nStrings {
     badge_pending: "Pending",
     badge_approved: "Approved",
     admin_title: "FAS Admin Panel",
-    admin_heading: "🔑 FAS Visitor Management",
+    admin_heading: "🔑 FAS Visitor & ACL Management",
     admin_th_user: "User ID",
-    admin_th_domain: "Domain",
+    admin_th_domain: "Last Seen Domain",
     admin_th_created: "Created",
-    admin_th_status: "Status",
+    admin_th_status: "ACL Rule",
     admin_th_actions: "Actions",
     admin_th_ip: "Last IP",
     admin_th_last_seen: "Last Seen",
@@ -95,7 +97,7 @@ pub const EN: I18nStrings = I18nStrings {
     btn_approve: "Approve",
     btn_revoke: "Revoke",
     btn_delete: "Delete",
-    confirm_revoke: "Revoke this user\u{2019}s access?",
+    confirm_revoke: "Revoke this user's access?",
     confirm_delete: "Permanently delete this record?",
     toast_approved: "✅ Approved",
     toast_revoked: "✅ Revoked",
@@ -106,6 +108,8 @@ pub const EN: I18nStrings = I18nStrings {
     rate_limit_btn: "Retry in",
     copy_btn: "Copy",
     copied: "Copied!",
+    tab_users: "👥 Visitors & Users",
+    tab_config: "⚙️ ACL & Cookie Config",
 };
 
 pub const ZH: I18nStrings = I18nStrings {
@@ -120,11 +124,11 @@ pub const ZH: I18nStrings = I18nStrings {
     badge_pending: "待审批",
     badge_approved: "已许可",
     admin_title: "FAS 管理面板",
-    admin_heading: "🔑 FAS 访客管理",
+    admin_heading: "🔑 FAS 访客与权限管理",
     admin_th_user: "用户 ID",
-    admin_th_domain: "域名",
+    admin_th_domain: "最后访问域名",
     admin_th_created: "创建时间",
-    admin_th_status: "状态",
+    admin_th_status: "ACL 规则",
     admin_th_actions: "操作",
     admin_th_ip: "最后 IP",
     admin_th_last_seen: "最后访问",
@@ -148,6 +152,8 @@ pub const ZH: I18nStrings = I18nStrings {
     rate_limit_btn: "等待",
     copy_btn: "复制",
     copied: "已复制！",
+    tab_users: "👥 访客与用户管理",
+    tab_config: "⚙️ ACL 与 Cookie 配置",
 };
 
 pub fn detect_locale(accept_language: &str) -> Locale {

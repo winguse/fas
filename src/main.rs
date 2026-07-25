@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod acl;
 mod config;
 mod handlers;
 mod i18n;
@@ -31,8 +32,11 @@ async fn main() {
     let config = Config::from_env();
     tracing::info!("Loaded config: {:?}", config);
 
-    // 3. Initialize and Load Data Store
-    let store = Store::new(config.data_file.clone());
+    // 3. Initialize and Load Data Store & ACL Config
+    let store = Store::new(config.data_file.clone(), config.acl_file.clone());
+    if let Err(e) = store.load_acl().await {
+        tracing::error!("Failed to load ACL config: {:?}", e);
+    }
     if let Err(e) = store.load().await {
         tracing::error!("Failed to load data store: {:?}", e);
     }
@@ -63,15 +67,15 @@ async fn main() {
         }
     });
 
-    // B. Periodic records purge task (Hard and Soft TTL)
+    // B. Periodic records purge task (Cookie Max Age and Soft TTL)
     let store_for_purge = store.clone();
-    let record_ttl = config.record_ttl;
+    let cookie_max_age = std::time::Duration::from_secs(config.cookie_max_age.max(0) as u64);
     let unapproved_ttl = config.unapproved_ttl;
     let purge_interval = config.purge_interval;
     tokio::spawn(async move {
         // Initial purge
         let initial_purged = store_for_purge
-            .purge_old_records(record_ttl, unapproved_ttl)
+            .purge_old_records(cookie_max_age, unapproved_ttl)
             .await;
         if initial_purged > 0 {
             tracing::info!(
@@ -89,7 +93,7 @@ async fn main() {
         loop {
             interval.tick().await;
             let purged = store_for_purge
-                .purge_old_records(record_ttl, unapproved_ttl)
+                .purge_old_records(cookie_max_age, unapproved_ttl)
                 .await;
             if purged > 0 {
                 tracing::info!("Purged {} expired or unapproved records", purged);
@@ -123,6 +127,10 @@ async fn main() {
         .route("/api/stats/reset", post(handlers::reset_stats_handler))
         .route("/api/users", get(handlers::list_users_handler))
         .route(
+            "/api/users/:sid/rule",
+            post(handlers::update_user_rule_handler),
+        )
+        .route(
             "/api/users/:sid/approve",
             post(handlers::approve_user_handler),
         )
@@ -135,6 +143,14 @@ async fn main() {
             post(handlers::update_remark_handler),
         )
         .route("/api/users/:sid", delete(handlers::delete_user_handler))
+        .route(
+            "/api/config",
+            get(handlers::get_config_handler).post(handlers::save_config_handler),
+        )
+        .route(
+            "/api/config/validate",
+            post(handlers::validate_config_handler),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
