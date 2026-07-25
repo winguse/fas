@@ -52,12 +52,10 @@ pub fn format_relative_time(locale: Locale, dt: chrono::DateTime<chrono::Utc>) -
         } else {
             format!("{}h ago", seconds / 3600)
         }
+    } else if is_zh {
+        format!("{}天前", seconds / 86400)
     } else {
-        if is_zh {
-            format!("{}天前", seconds / 86400)
-        } else {
-            format!("{}d ago", seconds / 86400)
-        }
+        format!("{}d ago", seconds / 86400)
     }
 }
 
@@ -65,7 +63,7 @@ pub fn admin_table_rows(locale: Locale, users: &[User]) -> String {
     let s = t(locale);
     if users.is_empty() {
         return format!(
-            "<tr><td colspan=\"10\" class=\"empty\">{}</td></tr>",
+            "<tr><td colspan=\"11\" class=\"empty\">{}</td></tr>",
             s.admin_empty
         );
     }
@@ -95,6 +93,7 @@ pub fn admin_table_rows(locale: Locale, users: &[User]) -> String {
 
             format!(
                 r#"<tr>
+        <td><input type="checkbox" class="user-checkbox" data-sid="{}" onchange="toggleSelectSid('{}', this.checked)"></td>
         <td class="mono">{}</td>
         <td>{}</td>
         <td class="mono">{}</td>
@@ -106,6 +105,8 @@ pub fn admin_table_rows(locale: Locale, users: &[User]) -> String {
         <td><input type="text" class="remark-input" data-sid="{}" onfocus="showDropdown(this)" onblur="hideDropdown(this)" oninput="handleRemarkInput(this)" onchange="updateRemark('{}', this.value)" value="{}"></td>
         <td><button class="btn btn-gray btn-sm" onclick="remove(event, '{}')">{}</button></td>
       </tr>"#,
+                short_sid,
+                short_sid,
                 short_sid,
                 escape_html(&u.domain),
                 created_at_display,
@@ -167,8 +168,7 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
   .remark-container {{ position: relative; display: inline-block; }}
   .remark-input {{ background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.25rem 0.5rem; color: #e2e8f0; font-size: 0.78rem; width: 140px; transition: border-color 0.15s; }}
   .remark-input:focus {{ outline: none; border-color: #3b82f6; }}
-  .remark-dropdown {{ position: absolute; top: 100%; left: 0; width: 150px; max-height: 180px; overflow-y: auto; background: #1e293b; border: 1px solid #334155; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); z-index: 100; display: none; margin-top: 2px; }}
-  .remark-dropdown.show {{ display: block; }}
+  .remark-dropdown {{ position: absolute; background: #1e293b; border: 1px solid #334155; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); z-index: 9999; display: none; max-height: 180px; overflow-y: auto; }}
   .dropdown-item {{ padding: 0.4rem 0.6rem; color: #e2e8f0; font-size: 0.78rem; cursor: pointer; transition: background 0.1s, color 0.1s; text-align: left; }}
   .dropdown-item:hover {{ background: #0f172a; color: #38bdf8; }}
   @media (max-width: 768px) {{
@@ -176,6 +176,25 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
     th, td {{ padding: 0.4rem 0.35rem; font-size: 0.75rem; }}
     .ua-cell {{ max-width: 80px; }}
   }}
+  .sortable {{ cursor: pointer; position: relative; user-select: none; }}
+  .sortable:hover {{ background: #1e293b !important; color: #3b82f6; }}
+  .sort-icon {{ font-size: 0.75rem; color: #3b82f6; }}
+  .filter-bar {{ background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.5rem; }}
+  .filter-group {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem; align-items: center; }}
+  .filter-input {{ background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.4rem 0.75rem; color: #e2e8f0; font-size: 0.8rem; outline: none; transition: border-color 0.15s; width: 100%; }}
+  .filter-input:focus {{ border-color: #3b82f6; }}
+  .batch-bar {{ display: none; align-items: center; justify-content: space-between; background: #1e293b; border: 1px solid #3b82f6; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1rem; }}
+  .batch-bar.show {{ display: flex; }}
+  .batch-info {{ font-size: 0.85rem; color: #e2e8f0; }}
+  .batch-info strong {{ color: #3b82f6; }}
+  .batch-actions {{ display: flex; gap: 0.5rem; }}
+  .pagination-bar {{ display: flex; align-items: center; justify-content: space-between; margin-top: 1rem; flex-wrap: wrap; gap: 1rem; }}
+  .pagination-info {{ font-size: 0.82rem; color: #94a3b8; }}
+  .pagination-controls {{ display: flex; gap: 0.25rem; }}
+  .page-btn {{ background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 0.35rem 0.75rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; transition: all 0.15s; }}
+  .page-btn:hover:not(.disabled) {{ background: #334155; color: #e2e8f0; border-color: #475569; }}
+  .page-btn.active {{ background: #3b82f6; color: #fff; border-color: #3b82f6; }}
+  .page-btn.disabled {{ opacity: 0.4; cursor: not-allowed; }}
 </style>
 </head>
 <body>
@@ -186,19 +205,48 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
   <span class="stat-chip">{admin_total}: <strong id="total-users">{total_users}</strong></span>
   <span class="stat-chip">{admin_total_req}: <strong id="total-reqs">{total_reqs}</strong></span>
 </div>
+
+<!-- Filter Bar -->
+<div class="filter-bar">
+  <div class="filter-group">
+    <input type="text" id="search-id" class="filter-input" placeholder="Search ID..." oninput="applyFilters()">
+    <input type="text" id="search-domain" class="filter-input" placeholder="Search Domain..." oninput="applyFilters()">
+    <select id="filter-status" class="filter-input" onchange="applyFilters()">
+      <option value="all">All Statuses</option>
+      <option value="approved">Approved Only</option>
+      <option value="pending">Pending Only</option>
+    </select>
+    <input type="text" id="search-ip" class="filter-input" placeholder="Search IP..." oninput="applyFilters()">
+    <input type="text" id="search-remark" class="filter-input" placeholder="Search Remark..." oninput="applyFilters()">
+    <input type="text" id="search-ua" class="filter-input" placeholder="Search User-Agent..." oninput="applyFilters()">
+    <button class="btn-sm btn-gray" style="padding: 0.4rem 0.75rem;" onclick="clearFilters()">Reset</button>
+  </div>
+</div>
+
+<!-- Batch Action Bar -->
+<div id="batch-bar" class="batch-bar">
+  <span class="batch-info">Selected: <strong id="batch-count">0</strong> users</span>
+  <div class="batch-actions">
+    <button class="btn btn-green btn-sm" onclick="batchApprove()">✅ Approve Selected</button>
+    <button class="btn btn-red btn-sm" onclick="batchRevoke()">⏳ Revoke Selected</button>
+    <button class="btn btn-gray btn-sm" onclick="batchDelete()">🗑️ Delete Selected</button>
+  </div>
+</div>
+
 <div style="overflow-x:auto">
 <table>
 <thead>
 <tr>
-  <th>{admin_th_user}</th>
-  <th>{admin_th_domain}</th>
-  <th>{admin_th_created}</th>
-  <th>{admin_th_status}</th>
-  <th>{admin_th_ip}</th>
-  <th>{admin_th_last_seen}</th>
-  <th>{admin_th_ua}</th>
-  <th>{admin_th_req_count}</th>
-  <th>{admin_th_remark}</th>
+  <th style="width: 40px;"><input type="checkbox" id="select-all-checkbox" onchange="toggleSelectAll(this)"></th>
+  <th class="sortable" data-col="sid" onclick="handleSortClick('sid')">{admin_th_user}<span class="sort-icon" id="sort-icon-sid"></span></th>
+  <th class="sortable" data-col="domain" onclick="handleSortClick('domain')">{admin_th_domain}<span class="sort-icon" id="sort-icon-domain"></span></th>
+  <th class="sortable" data-col="created_at" onclick="handleSortClick('created_at')">{admin_th_created}<span class="sort-icon" id="sort-icon-created_at"> ▼</span></th>
+  <th class="sortable" data-col="approved" onclick="handleSortClick('approved')">{admin_th_status}<span class="sort-icon" id="sort-icon-approved"></span></th>
+  <th class="sortable" data-col="last_ip" onclick="handleSortClick('last_ip')">{admin_th_ip}<span class="sort-icon" id="sort-icon-last_ip"></span></th>
+  <th class="sortable" data-col="last_seen" onclick="handleSortClick('last_seen')">{admin_th_last_seen}<span class="sort-icon" id="sort-icon-last_seen"></span></th>
+  <th class="sortable" data-col="user_agent" onclick="handleSortClick('user_agent')">{admin_th_ua}<span class="sort-icon" id="sort-icon-user_agent"></span></th>
+  <th class="sortable" data-col="request_count" onclick="handleSortClick('request_count')">{admin_th_req_count}<span class="sort-icon" id="sort-icon-request_count"></span></th>
+  <th class="sortable" data-col="remark" onclick="handleSortClick('remark')">{admin_th_remark}<span class="sort-icon" id="sort-icon-remark"></span></th>
   <th>{admin_th_actions}</th>
 </tr>
 </thead>
@@ -207,6 +255,21 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
 </tbody>
 </table>
 </div>
+
+<!-- Pagination Bar -->
+<div class="pagination-bar">
+  <div class="pagination-info" id="pagination-info">Showing 0 to 0 of 0 entries</div>
+  <div style="display: flex; align-items: center; gap: 1rem;">
+    <select class="filter-input" style="width: auto; padding: 0.35rem 0.5rem;" onchange="changePageSize(this.value)">
+      <option value="10">10 per page</option>
+      <option value="25" selected>25 per page</option>
+      <option value="50">50 per page</option>
+      <option value="100">100 per page</option>
+    </select>
+    <div class="pagination-controls" id="pagination-controls"></div>
+  </div>
+</div>
+
 </div>
 <script>
 const i18n = {{
@@ -314,6 +377,14 @@ const presets = [
   '📟 iPad'
 ];
 
+let allUsers = [];
+let filteredUsers = [];
+const selectedSids = new Set();
+let currentSortColumn = 'created_at';
+let currentSortDirection = 'desc';
+let currentPage = 1;
+let pageSize = 25;
+
 let globalUsers = [];
 
 window.activeRemarkInput = null;
@@ -405,11 +476,106 @@ window.selectGlobalOption = (val) => {{
 }};
 
 function updateTable(users) {{
+  allUsers = users || [];
+  globalUsers = allUsers;
+  applyFilters();
+}}
+
+function applyFilters() {{
+  const searchId = document.getElementById('search-id').value.toLowerCase().trim();
+  const searchDomain = document.getElementById('search-domain').value.toLowerCase().trim();
+  const filterStatus = document.getElementById('filter-status').value;
+  const searchIp = document.getElementById('search-ip').value.toLowerCase().trim();
+  const searchRemark = document.getElementById('search-remark').value.toLowerCase().trim();
+  const searchUa = document.getElementById('search-ua').value.toLowerCase().trim();
+  
+  filteredUsers = allUsers.filter(u => {{
+    if (searchId && !u.sid.toLowerCase().includes(searchId)) return false;
+    if (searchDomain && !u.domain.toLowerCase().includes(searchDomain)) return false;
+    if (filterStatus === 'approved' && !u.approved) return false;
+    if (filterStatus === 'pending' && u.approved) return false;
+    if (searchIp && !u.last_ip.toLowerCase().includes(searchIp)) return false;
+    if (searchRemark && !u.remark.toLowerCase().includes(searchRemark)) return false;
+    if (searchUa && !u.user_agent.toLowerCase().includes(searchUa)) return false;
+    return true;
+  }});
+  
+  applySort();
+  renderTablePage();
+  updateSelectAllCheckboxState();
+}}
+
+function clearFilters() {{
+  document.getElementById('search-id').value = '';
+  document.getElementById('search-domain').value = '';
+  document.getElementById('filter-status').value = 'all';
+  document.getElementById('search-ip').value = '';
+  document.getElementById('search-remark').value = '';
+  document.getElementById('search-ua').value = '';
+  applyFilters();
+}}
+
+function handleSortClick(column) {{
+  if (currentSortColumn === column) {{
+    currentSortDirection = currentSortDirection === 'asc' ? 'desc' : 'asc';
+  }} else {{
+    currentSortColumn = column;
+    currentSortDirection = 'desc';
+  }}
+  applyFilters();
+}}
+
+function applySort() {{
+  filteredUsers.sort((a, b) => {{
+    let valA = a[currentSortColumn];
+    let valB = b[currentSortColumn];
+    
+    if (valA === undefined || valA === null) valA = '';
+    if (valB === undefined || valB === null) valB = '';
+    
+    if (typeof valA === 'string') {{
+      return currentSortDirection === 'asc' 
+        ? valA.localeCompare(valB) 
+        : valB.localeCompare(valA);
+    }}
+    
+    if (typeof valA === 'number' || typeof valA === 'boolean') {{
+      if (valA < valB) return currentSortDirection === 'asc' ? -1 : 1;
+      if (valA > valB) return currentSortDirection === 'asc' ? 1 : -1;
+      return 0;
+    }}
+    
+    return 0;
+  }});
+  updateSortIcons();
+}}
+
+function updateSortIcons() {{
+  const ids = ['sid', 'domain', 'created_at', 'approved', 'last_ip', 'last_seen', 'user_agent', 'request_count', 'remark'];
+  for (const id of ids) {{
+    const el = document.getElementById('sort-icon-' + id);
+    if (el) {{
+      if (id === currentSortColumn) {{
+        el.textContent = currentSortDirection === 'asc' ? ' ▲' : ' ▼';
+      }} else {{
+        el.textContent = '';
+      }}
+    }}
+  }}
+}}
+
+function renderTablePage() {{
   const tbody = document.getElementById('user-list');
-  if (!users || users.length === 0) {{
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">' + escapeHtml(i18n.adminEmpty) + '</td></tr>';
+  if (!filteredUsers || filteredUsers.length === 0) {{
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">' + escapeHtml(i18n.adminEmpty) + '</td></tr>';
+    updatePaginationBar();
+    updateBatchBar();
     return;
   }}
+  
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, filteredUsers.length);
+  const pageUsers = filteredUsers.slice(startIndex, endIndex);
   
   let activeSid = null;
   let activeVal = '';
@@ -423,11 +589,10 @@ function updateTable(users) {{
     activeSelectionEnd = document.activeElement.selectionEnd;
   }}
   
-  globalUsers = users;
-  
   let html = '';
-  for (const u of users) {{
+  for (const u of pageUsers) {{
     const shortSid = u.sid;
+    const isSelected = selectedSids.has(shortSid);
     
     const statusBadge = u.approved
       ? '<span class="badge badge-yes clickable" onclick="revoke(event, \'' + escapeHtml(shortSid) + '\')">✅ ' + escapeHtml(i18n.badgeApproved) + '</span>'
@@ -446,6 +611,7 @@ function updateTable(users) {{
     const remarkVal = (shortSid === activeSid) ? activeVal : (u.remark || '');
     
     html += '<tr>' +
+      '<td><input type="checkbox" class="user-checkbox" data-sid="' + escapeHtml(shortSid) + '" ' + (isSelected ? 'checked' : '') + ' onchange="toggleSelectSid(\'' + escapeHtml(shortSid) + '\', this.checked)"></td>' +
       '<td class="mono">' + escapeHtml(shortSid) + '</td>' +
       '<td>' + escapeHtml(u.domain) + '</td>' +
       '<td class="mono">' + escapeHtml(createdAtDisplay) + '</td>' +
@@ -455,19 +621,14 @@ function updateTable(users) {{
       '<td class="ua-cell" title="' + escapeHtml(u.user_agent) + '">' + escapeHtml(uaShort) + '</td>' +
       '<td class="mono">' + u.request_count + '</td>' +
       '<td>' +
-        '<div class="remark-container">' +
-          '<input type="text" class="remark-input" data-sid="' + escapeHtml(shortSid) + '" ' +
-            'onfocus="showDropdown(this)" onblur="hideDropdown(this)" oninput="handleRemarkInput(this)" ' +
-            'onchange="updateRemark(\'' + escapeHtml(shortSid) + '\', this.value)" value="' + escapeHtml(remarkVal) + '">' +
-          '<div class="remark-dropdown"></div>' +
-        '</div>' +
+        '<input type="text" class="remark-input" data-sid="' + escapeHtml(shortSid) + '" ' +
+          'onfocus="showDropdown(this)" onblur="hideDropdown(this)" oninput="handleRemarkInput(this)" ' +
+          'onchange="updateRemark(\'' + escapeHtml(shortSid) + '\', this.value)" value="' + escapeHtml(remarkVal) + '">' +
       '</td>' +
       '<td><button class="btn btn-gray btn-sm" onclick="remove(event, \'' + escapeHtml(shortSid) + '\')">' + escapeHtml(i18n.btnDelete) + '</button></td>' +
     '</tr>';
   }}
   tbody.innerHTML = html;
-  
-  populateAllDropdowns(users);
   
   if (activeSid) {{
     const input = document.querySelector('.remark-input[data-sid="' + activeSid + '"]');
@@ -477,6 +638,192 @@ function updateTable(users) {{
       input.setSelectionRange(activeSelectionStart, activeSelectionEnd);
       showDropdown(input);
     }}
+  }}
+  
+  updatePaginationBar();
+  updateBatchBar();
+}}
+
+function toggleSelectSid(sid, checked) {{
+  if (checked) {{
+    selectedSids.add(sid);
+  }} else {{
+    selectedSids.delete(sid);
+  }}
+  updateSelectAllCheckboxState();
+  updateBatchBar();
+}}
+
+function toggleSelectAll(checkbox) {{
+  const visibleSids = getVisibleSids();
+  if (checkbox.checked) {{
+    for (const sid of visibleSids) {{
+      selectedSids.add(sid);
+    }}
+  }} else {{
+    for (const sid of visibleSids) {{
+      selectedSids.delete(sid);
+    }}
+  }}
+  renderTablePage();
+}}
+
+// Helper function to return visible short user sids of the current page
+function getVisibleSids() {{
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, filteredUsers.length);
+  return filteredUsers.slice(startIndex, endIndex).map(u => u.sid);
+}}
+
+function updateSelectAllCheckboxState() {{
+  const checkbox = document.getElementById('select-all-checkbox');
+  if (!checkbox) return;
+  const visibleSids = getVisibleSids();
+  if (visibleSids.length === 0) {{
+    checkbox.checked = false;
+    checkbox.indeterminate = false;
+    return;
+  }}
+  
+  let allSelected = true;
+  let noneSelected = true;
+  for (const sid of visibleSids) {{
+    if (selectedSids.has(sid)) {{
+      noneSelected = false;
+    }} else {{
+      allSelected = false;
+    }}
+  }}
+  
+  checkbox.checked = allSelected;
+  checkbox.indeterminate = !allSelected && !noneSelected;
+}}
+
+function changePage(page) {{
+  const totalPages = Math.ceil(filteredUsers.length / pageSize);
+  if (page < 1 || page > totalPages) return;
+  currentPage = page;
+  renderTablePage();
+  updateSelectAllCheckboxState();
+}}
+
+function changePageSize(size) {{
+  pageSize = parseInt(size, 10);
+  currentPage = 1;
+  renderTablePage();
+  updateSelectAllCheckboxState();
+}}
+
+function updatePaginationBar() {{
+  const totalEntries = filteredUsers.length;
+  const totalPages = Math.ceil(totalEntries / pageSize);
+  
+  const infoEl = document.getElementById('pagination-info');
+  if (infoEl) {{
+    if (totalEntries === 0) {{
+      infoEl.textContent = 'Showing 0 to 0 of 0 entries';
+    }} else {{
+      const start = (currentPage - 1) * pageSize + 1;
+      const end = Math.min(start + pageSize - 1, totalEntries);
+      infoEl.textContent = 'Showing ' + start + ' to ' + end + ' of ' + totalEntries + ' entries';
+    }}
+  }}
+  
+  const controlsEl = document.getElementById('pagination-controls');
+  if (!controlsEl) return;
+  
+  if (totalEntries === 0) {{
+    controlsEl.innerHTML = '';
+    return;
+  }}
+  
+  let html = '';
+  html += '<button class="page-btn ' + (currentPage === 1 ? 'disabled' : '') + '" onclick="changePage(' + (currentPage - 1) + ')">Prev</button>';
+  
+  const range = 2;
+  for (let i = 1; i <= totalPages; i++) {{
+    if (i === 1 || i === totalPages || (i >= currentPage - range && i <= currentPage + range)) {{
+      html += '<button class="page-btn ' + (i === currentPage ? 'active' : '') + '" onclick="changePage(' + i + ')">' + i + '</button>';
+    }} else if (i === currentPage - range - 1 || i === currentPage + range + 1) {{
+      html += '<span class="page-btn disabled">...</span>';
+    }}
+  }}
+  
+  html += '<button class="page-btn ' + (currentPage === totalPages ? 'disabled' : '') + '" onclick="changePage(' + (currentPage + 1) + ')">Next</button>';
+  
+  controlsEl.innerHTML = html;
+}}
+
+function updateBatchBar() {{
+  const bar = document.getElementById('batch-bar');
+  const countEl = document.getElementById('batch-count');
+  if (bar && countEl) {{
+    if (selectedSids.size > 0) {{
+      countEl.textContent = selectedSids.size;
+      bar.classList.add('show');
+    }} else {{
+      bar.classList.remove('show');
+    }}
+  }}
+}}
+
+async function batchApprove() {{
+  if (selectedSids.size === 0) return;
+  const sids = Array.from(selectedSids);
+  const isZh = document.documentElement.lang === 'zh';
+  showToast(isZh ? '正在批量许可...' : 'Batch approving...');
+  
+  try {{
+    const promises = sids.map(sid => api('/api/users/' + encodeURIComponent(sid) + '/approve', 'POST'));
+    const results = await Promise.all(promises);
+    const successCount = results.filter(r => r.ok).length;
+    showToast(isZh ? '成功许可了 ' + successCount + ' 个用户' : 'Successfully approved ' + successCount + ' users');
+    selectedSids.clear();
+    await loadData();
+  }} catch (err) {{
+    showToast(i18n.toastFailed);
+  }}
+}}
+
+async function batchRevoke() {{
+  if (selectedSids.size === 0) return;
+  const sids = Array.from(selectedSids);
+  const isZh = document.documentElement.lang === 'zh';
+  showToast(isZh ? '正在批量撤销...' : 'Batch revoking...');
+  
+  try {{
+    const promises = sids.map(sid => api('/api/users/' + encodeURIComponent(sid) + '/revoke', 'POST'));
+    const results = await Promise.all(promises);
+    const successCount = results.filter(r => r.ok).length;
+    showToast(isZh ? '成功撤销了 ' + successCount + ' 个用户' : 'Successfully revoked ' + successCount + ' users');
+    selectedSids.clear();
+    await loadData();
+  }} catch (err) {{
+    showToast(i18n.toastFailed);
+  }}
+}}
+
+async function batchDelete() {{
+  if (selectedSids.size === 0) return;
+  const sids = Array.from(selectedSids);
+  const isZh = document.documentElement.lang === 'zh';
+  const confirmText = isZh 
+    ? '确定要删除这 ' + selectedSids.size + ' 个记录吗？此操作无法撤销。'
+    : 'Are you sure you want to permanently delete these ' + selectedSids.size + ' records? This cannot be undone.';
+    
+  if (!confirm(confirmText)) return;
+  
+  showToast(isZh ? '正在批量删除...' : 'Batch deleting...');
+  
+  try {{
+    const promises = sids.map(sid => api('/api/users/' + encodeURIComponent(sid), 'DELETE'));
+    const results = await Promise.all(promises);
+    const successCount = results.filter(r => r.ok).length;
+    showToast(isZh ? '成功删除了 ' + successCount + ' 个用户' : 'Successfully deleted ' + successCount + ' users');
+    selectedSids.clear();
+    await loadData();
+  }} catch (err) {{
+    showToast(i18n.toastFailed);
   }}
 }}
 
@@ -489,7 +836,9 @@ async function loadData() {{
     
     if (usersRes.ok && statsRes.ok) {{
       updateStats(statsRes.totalUsers, statsRes.totalReqs);
-      updateTable(usersRes.users);
+      allUsers = usersRes.users;
+      globalUsers = allUsers;
+      applyFilters();
     }}
   }} catch (err) {{
     console.error('Failed to load data:', err);
@@ -596,6 +945,8 @@ window.updateRemark = async (sid, val) => {{
   }}
 }};
 
+loadData();
+
 // Auto reload every 10s if the tab is active, no confirmation is pending, and no input is focused
 setInterval(() => {{
   const isEditing = document.activeElement && document.activeElement.classList.contains('remark-input');
@@ -688,7 +1039,7 @@ function copyId() {{
 }}
 (function() {{
   const isZh = document.documentElement.lang === 'zh-CN';
-  const msgCheckingIn = isZh ? '将在 {{seconds}} 秒后自动检查...' : 'Checking in {{seconds}}s...';
+  const msgCheckingIn = isZh ? '将在 {{{{seconds}}}} 秒后自动检查...' : 'Checking in {{{{seconds}}}}s...';
   const msgChecking = isZh ? '正在检查...' : 'Checking...';
   const msgAuthenticated = isZh ? '认证成功！正在刷新...' : 'Authenticated! Refreshing...';
   
@@ -698,7 +1049,7 @@ function copyId() {{
   let countdown = 10;
   
   function updateText() {{
-    statusEl.textContent = msgCheckingIn.replace('{{seconds}}', countdown);
+    statusEl.textContent = msgCheckingIn.replace('{{{{seconds}}}}', countdown);
   }}
   
   async function performCheck() {{
