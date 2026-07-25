@@ -107,6 +107,14 @@ pub async fn auth_handler(
         .unwrap_or_else(|| "unknown".to_string());
     let s = crate::i18n::t(locale);
 
+    // Increment dedicated total requests counter
+    {
+        let mut inner = state.store.inner.write().await;
+        inner.total_requests = inner.total_requests.saturating_add(1);
+        inner.dirty = true;
+    }
+    state.store.mark_dirty(state.config.save_interval).await;
+
     let mut user_found = None;
     if !sid.is_empty() {
         let mut inner = state.store.inner.write().await;
@@ -248,12 +256,25 @@ pub async fn auth_handler(
 pub async fn stats_handler(State(state): State<AppState>) -> impl IntoResponse {
     let inner = state.store.inner.read().await;
     let total_users = inner.users.len();
-    let total_reqs: u64 = inner.users.values().map(|u| u.request_count).sum();
+    let total_reqs = inner.total_requests;
 
     Json(serde_json::json!({
         "ok": true,
         "totalUsers": total_users,
         "totalReqs": total_reqs
+    }))
+}
+
+/// POST /api/stats/reset
+pub async fn reset_stats_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let mut inner = state.store.inner.write().await;
+    inner.total_requests = 0;
+    inner.dirty = true;
+    drop(inner);
+    state.store.mark_dirty(state.config.save_interval).await;
+    Json(serde_json::json!({
+        "ok": true,
+        "totalReqs": 0
     }))
 }
 
@@ -385,7 +406,7 @@ pub async fn admin_page_handler(
         let mut users: Vec<crate::store::User> = inner.users.values().cloned().collect();
         users.sort_by_key(|u| std::cmp::Reverse(u.created_at));
         let total_users = inner.users.len();
-        let total_reqs: u64 = inner.users.values().map(|u| u.request_count).sum();
+        let total_reqs = inner.total_requests;
         (users, total_users, total_reqs)
     };
 

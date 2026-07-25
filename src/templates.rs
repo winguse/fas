@@ -203,7 +203,7 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
 <h1>{admin_heading}</h1>
 <div class="stats-bar">
   <span class="stat-chip">{admin_total}: <strong id="total-users">{total_users}</strong></span>
-  <span class="stat-chip">{admin_total_req}: <strong id="total-reqs">{total_reqs}</strong></span>
+  <span class="stat-chip">{admin_total_req}: <strong id="total-reqs">{total_reqs}</strong><button class="btn btn-gray" style="padding: 0.1rem 0.4rem; margin-left: 0.5rem; font-size: 0.7rem; vertical-align: middle;" onclick="resetStats()">Reset</button></span>
 </div>
 
 <!-- Filter Bar -->
@@ -219,7 +219,7 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
     <input type="text" id="search-ip" class="filter-input" placeholder="Search IP..." oninput="applyFilters()">
     <input type="text" id="search-remark" class="filter-input" placeholder="Search Remark..." oninput="applyFilters()">
     <input type="text" id="search-ua" class="filter-input" placeholder="Search User-Agent..." oninput="applyFilters()">
-    <button class="btn-sm btn-gray" style="padding: 0.4rem 0.75rem;" onclick="clearFilters()">Reset</button>
+    <button class="btn btn-gray" style="padding: 0.4rem 0.75rem; font-size: 0.8rem; border-radius: 6px; line-height: 1.2;" onclick="clearFilters()">Reset</button>
   </div>
 </div>
 
@@ -229,7 +229,7 @@ pub fn admin_page(locale: Locale, user_list: &str, total_users: usize, total_req
   <div class="batch-actions">
     <button class="btn btn-green btn-sm" onclick="batchApprove()">✅ Approve Selected</button>
     <button class="btn btn-red btn-sm" onclick="batchRevoke()">⏳ Revoke Selected</button>
-    <button class="btn btn-gray btn-sm" onclick="batchDelete()">🗑️ Delete Selected</button>
+    <button id="btn-batch-delete" class="btn btn-gray btn-sm" onclick="batchDelete(event)">🗑️ Delete Selected</button>
   </div>
 </div>
 
@@ -763,6 +763,9 @@ function updateBatchBar() {{
       bar.classList.add('show');
     }} else {{
       bar.classList.remove('show');
+      if (confirmStates['batch_delete']) {{
+        confirmStates['batch_delete'].reset();
+      }}
     }}
   }}
 }}
@@ -803,29 +806,40 @@ async function batchRevoke() {{
   }}
 }}
 
-async function batchDelete() {{
+async function batchDelete(event) {{
   if (selectedSids.size === 0) return;
   const sids = Array.from(selectedSids);
   const isZh = document.documentElement.lang === 'zh';
-  const confirmText = isZh 
-    ? '确定要删除这 ' + selectedSids.size + ' 个记录吗？此操作无法撤销。'
-    : 'Are you sure you want to permanently delete these ' + selectedSids.size + ' records? This cannot be undone.';
-    
+  const confirmText = isZh ? '确认批量删除' : 'Confirm Delete Selected';
+  
+  await handleConfirm(event, 'batch_delete', confirmText, async () => {{
+    showToast(isZh ? '正在批量删除...' : 'Batch deleting...');
+    try {{
+      const promises = sids.map(sid => api('/api/users/' + encodeURIComponent(sid), 'DELETE'));
+      const results = await Promise.all(promises);
+      const successCount = results.filter(r => r.ok).length;
+      showToast(isZh ? '成功删除了 ' + successCount + ' 个用户' : 'Successfully deleted ' + successCount + ' users');
+      selectedSids.clear();
+      await loadData();
+    }} catch (err) {{
+      showToast(i18n.toastFailed);
+    }}
+  }});
+}}
+
+window.resetStats = async () => {{
+  const isZh = document.documentElement.lang === 'zh';
+  const confirmText = isZh ? '确定要重置请求计数器吗？' : 'Are you sure you want to reset the request counter?';
   if (!confirm(confirmText)) return;
   
-  showToast(isZh ? '正在批量删除...' : 'Batch deleting...');
-  
-  try {{
-    const promises = sids.map(sid => api('/api/users/' + encodeURIComponent(sid), 'DELETE'));
-    const results = await Promise.all(promises);
-    const successCount = results.filter(r => r.ok).length;
-    showToast(isZh ? '成功删除了 ' + successCount + ' 个用户' : 'Successfully deleted ' + successCount + ' users');
-    selectedSids.clear();
-    await loadData();
-  }} catch (err) {{
-    showToast(i18n.toastFailed);
+  const data = await api('/api/stats/reset', 'POST');
+  if (data.ok) {{
+    document.getElementById('total-reqs').textContent = '0';
+    showToast(isZh ? '请求计数器已重置' : 'Request counter reset');
+  }} else {{
+    showToast(i18n.toastFailed + (data.error ? ': ' + data.error : ''));
   }}
-}}
+}};
 
 async function loadData() {{
   try {{

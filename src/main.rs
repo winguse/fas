@@ -120,6 +120,7 @@ async fn main() {
         .route("/_auth", get(handlers::auth_handler))
         .route("/", get(handlers::admin_page_handler))
         .route("/api/stats", get(handlers::stats_handler))
+        .route("/api/stats/reset", post(handlers::reset_stats_handler))
         .route("/api/users", get(handlers::list_users_handler))
         .route(
             "/api/users/:sid/approve",

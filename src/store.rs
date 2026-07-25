@@ -28,6 +28,7 @@ pub struct StoreInner {
     pub dirty: bool,
     pub last_save: Instant,
     pub data_file: PathBuf,
+    pub total_requests: u64,
 }
 
 #[derive(Clone)]
@@ -45,6 +46,7 @@ impl Store {
                 dirty: false,
                 last_save: Instant::now() - Duration::from_secs(3600), // set to past so first save happens immediately if dirty
                 data_file,
+                total_requests: 0,
             })),
             notify_save: Arc::new(Notify::new()),
         }
@@ -77,14 +79,28 @@ impl Store {
         let mut inner = self.inner.write().await;
         inner.users.clear();
         let mut count = 0;
+        let mut has_meta_stats = false;
         for line in content.lines() {
-            if line.trim().is_empty() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
                 continue;
             }
-            if let Ok(u) = serde_json::from_str::<User>(line) {
+            if trimmed.contains("\"meta\":\"stats\"") {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(total) = val.get("total_requests").and_then(|v| v.as_u64()) {
+                        inner.total_requests = total;
+                        has_meta_stats = true;
+                    }
+                }
+                continue;
+            }
+            if let Ok(u) = serde_json::from_str::<User>(trimmed) {
                 inner.users.insert(u.sid.clone(), u);
                 count += 1;
             }
+        }
+        if !has_meta_stats {
+            inner.total_requests = inner.users.values().map(|u| u.request_count).sum();
         }
         tracing::info!("Loaded {} records from {:?}", count, data_file);
         Ok(())
@@ -92,7 +108,7 @@ impl Store {
 
     /// Save dirty store to file
     pub async fn flush(&self) -> std::io::Result<()> {
-        let (users, data_file) = {
+        let (users, total_requests, data_file) = {
             let mut inner = self.inner.write().await;
             if !inner.dirty {
                 return Ok(());
@@ -101,6 +117,7 @@ impl Store {
             inner.last_save = Instant::now();
             (
                 inner.users.values().cloned().collect::<Vec<User>>(),
+                inner.total_requests,
                 inner.data_file.clone(),
             )
         };
@@ -110,6 +127,16 @@ impl Store {
         }
 
         let mut content = String::new();
+
+        // Write the stats metadata line first
+        if let Ok(line) = serde_json::to_string(&serde_json::json!({
+            "meta": "stats",
+            "total_requests": total_requests
+        })) {
+            content.push_str(&line);
+            content.push('\n');
+        }
+
         for u in users {
             if let Ok(line) = serde_json::to_string(&u) {
                 content.push_str(&line);
@@ -303,6 +330,56 @@ mod tests {
         {
             let inner2 = store2.inner.read().await;
             assert_eq!(inner2.users.len(), 0);
+        }
+
+        // Clean up temp file
+        let _ = std::fs::remove_file(temp_file);
+    }
+
+    #[tokio::test]
+    async fn test_total_requests_preservation() {
+        let temp_file =
+            std::env::temp_dir().join(format!("test_fas_requests_{}.jsonl", uuid::Uuid::new_v4()));
+        let store = Store::new(temp_file.clone());
+
+        // Increment total requests
+        {
+            let mut inner = store.inner.write().await;
+            inner.total_requests = 15;
+            inner.dirty = true;
+        }
+
+        // Save
+        store.flush().await.expect("Failed to flush");
+
+        // Load in store2
+        let store2 = Store::new(temp_file.clone());
+        store2.load().await.expect("Failed to load");
+        {
+            let inner2 = store2.inner.read().await;
+            assert_eq!(inner2.total_requests, 15);
+        }
+
+        // Delete all entries (users is already empty, but let's make sure it is marked dirty and flushed)
+        {
+            let mut inner2 = store2.inner.write().await;
+            inner2.users.clear();
+            inner2.dirty = true;
+        }
+        store2
+            .flush()
+            .await
+            .expect("Failed to flush empty users store");
+
+        // Load in store3
+        let store3 = Store::new(temp_file.clone());
+        store3
+            .load()
+            .await
+            .expect("Failed to load empty users store");
+        {
+            let inner3 = store3.inner.read().await;
+            assert_eq!(inner3.total_requests, 15);
         }
 
         // Clean up temp file
