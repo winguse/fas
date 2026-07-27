@@ -94,7 +94,10 @@ where
     B: Send + 'static,
 {
     // Always allow /_auth through (visitor auth endpoint)
-    if req.uri().path() == "/_auth" {
+    if req.uri().path() == "/_auth"
+        || req.uri().path() == "/_health"
+        || req.uri().path() == "/_ready"
+    {
         return next.run(req).await;
     }
 
@@ -141,6 +144,15 @@ fn compute_user_expire_at(
 /// GET /_health
 pub async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
+}
+
+pub async fn ready_check(State(state): State<AppState>) -> impl IntoResponse {
+    let is_ready = state.store.inner.read().await.is_ready;
+    if is_ready {
+        (StatusCode::OK, "OK")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "Not Ready")
+    }
 }
 
 /// GET /_auth
