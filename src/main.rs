@@ -123,6 +123,7 @@ async fn main() {
     let shared_secret = config.shared_secret.clone();
     let app = Router::new()
         .route("/_health", get(handlers::health_check))
+        .route("/_ready", get(handlers::ready_check))
         .route("/_auth", get(handlers::auth_handler))
         .route("/", get(handlers::admin_page_handler))
         .route("/api/stats", get(handlers::stats_handler))

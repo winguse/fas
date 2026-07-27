@@ -98,6 +98,7 @@ pub struct StoreInner {
     pub acl_config: AclConfig,
     pub compiled_acl: CompiledAclConfig,
     pub total_requests: u64,
+    pub is_ready: bool,
 }
 
 #[derive(Clone)]
@@ -124,6 +125,7 @@ impl Store {
                 acl_config: default_cfg,
                 compiled_acl: default_compiled,
                 total_requests: 0,
+                is_ready: false,
             })),
             notify_save: Arc::new(Notify::new()),
         }
@@ -226,6 +228,8 @@ impl Store {
 
         if !data_file.exists() {
             tracing::info!("No existing data file — starting fresh");
+            let mut inner = self.inner.write().await;
+            inner.is_ready = true;
             return Ok(());
         }
 
@@ -234,6 +238,8 @@ impl Store {
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     tracing::info!("No existing data file — starting fresh");
+                    let mut inner = self.inner.write().await;
+                    inner.is_ready = true;
                     return Ok(());
                 } else {
                     return Err(e);
@@ -267,6 +273,7 @@ impl Store {
         if !has_meta_stats {
             inner.total_requests = inner.users.values().map(|u| u.request_count).sum();
         }
+        inner.is_ready = true;
         tracing::info!("Loaded {} records from {:?}", count, data_file);
         Ok(())
     }
