@@ -131,16 +131,12 @@ async fn main() {
             post(handlers::update_user_rule_handler),
         )
         .route(
-            "/api/users/:sid/approve",
-            post(handlers::approve_user_handler),
-        )
-        .route(
-            "/api/users/:sid/revoke",
-            post(handlers::revoke_user_handler),
-        )
-        .route(
             "/api/users/:sid/remark",
             post(handlers::update_remark_handler),
+        )
+        .route(
+            "/api/users/:sid/extend",
+            post(handlers::extend_user_ttl_handler),
         )
         .route("/api/users/:sid", delete(handlers::delete_user_handler))
         .route(

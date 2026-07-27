@@ -85,18 +85,19 @@ fn make_set_cookie(sid: &str, cookie_domain: Option<&str>, max_age: i64) -> Stri
 }
 
 fn compute_user_expire_at(
-    user: &crate::store::User,
-    new_rule: &str,
+    compiled_acl: &crate::acl::CompiledAclConfig,
+    rule_name: &str,
+    domain: &str,
     config: &Config,
 ) -> chrono::DateTime<Utc> {
-    let is_deny = new_rule == "deny_all" || new_rule == "deny";
-    let duration = if is_deny {
+    let is_allowed = compiled_acl.evaluate(rule_name, "GET", domain, "/");
+    let duration = if is_allowed {
+        chrono::Duration::seconds(config.cookie_max_age)
+    } else {
         chrono::Duration::from_std(config.unapproved_ttl)
             .unwrap_or_else(|_| chrono::Duration::hours(1))
-    } else {
-        chrono::Duration::seconds(config.cookie_max_age)
     };
-    user.created_at + duration
+    Utc::now() + duration
 }
 
 /// GET /_health
@@ -185,11 +186,9 @@ pub async fn auth_handler(
 
         if is_allowed {
             state.store.mark_dirty(state.config.save_interval).await;
-            let set_cookie_hdr = make_set_cookie(
-                &user.sid,
-                cookie_domain_opt.as_deref(),
-                state.config.cookie_max_age,
-            );
+            let remaining_ttl = (user.expire_at - Utc::now()).num_seconds().max(1);
+            let set_cookie_hdr =
+                make_set_cookie(&user.sid, cookie_domain_opt.as_deref(), remaining_ttl);
 
             return Response::builder()
                 .status(StatusCode::OK)
@@ -266,7 +265,7 @@ pub async fn auth_handler(
     let new_user = crate::store::User {
         sid: new_sid.clone(),
         last_seen_domain: domain.clone(),
-        acl_rule: "deny_all".to_string(),
+        acl_rule: String::new(),
         created_at,
         updated_at: created_at,
         expire_at,
@@ -280,7 +279,7 @@ pub async fn auth_handler(
     let cookie_domain_opt = {
         let mut inner = state.store.inner.write().await;
         let cdom = inner.compiled_acl.resolve_cookie_domain(&domain);
-        inner.users.insert(new_sid.clone(), new_user);
+        inner.users.insert(new_sid.clone(), new_user.clone());
         cdom
     };
     state.store.mark_dirty(state.config.save_interval).await;
@@ -307,11 +306,8 @@ pub async fn auth_handler(
     );
     let html = crate::templates::visitor_page(locale, s.visitor_new_title, &body_html);
 
-    let set_cookie_hdr = make_set_cookie(
-        &new_sid,
-        cookie_domain_opt.as_deref(),
-        state.config.cookie_max_age,
-    );
+    let remaining_ttl = (new_user.expire_at - Utc::now()).num_seconds().max(1);
+    let set_cookie_hdr = make_set_cookie(&new_sid, cookie_domain_opt.as_deref(), remaining_ttl);
 
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
@@ -391,72 +387,17 @@ pub async fn update_user_rule_handler(
         .keys()
         .find(|k| *k == &sid || (sid.len() >= 6 && k.starts_with(&sid)))
         .cloned();
+    let compiled_acl = inner.compiled_acl.clone();
     if let Some(full_sid) = target_sid {
         if let Some(user) = inner.users.get_mut(&full_sid) {
+            let domain = user.last_seen_domain.clone();
             user.acl_rule = payload.acl_rule.clone();
             user.updated_at = Utc::now();
-            user.expire_at = compute_user_expire_at(user, &payload.acl_rule, &state.config);
+            user.expire_at =
+                compute_user_expire_at(&compiled_acl, &payload.acl_rule, &domain, &state.config);
             inner.dirty = true;
             drop(inner);
             state.store.mark_dirty(state.config.save_interval).await;
-            return (StatusCode::OK, Json(serde_json::json!({ "ok": true })));
-        }
-    }
-    (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({ "ok": false, "error": "User not found" })),
-    )
-}
-
-/// POST /api/users/:sid/approve (Legacy endpoint -> sets allow_all)
-pub async fn approve_user_handler(
-    State(state): State<AppState>,
-    Path(sid): Path<String>,
-) -> impl IntoResponse {
-    let mut inner = state.store.inner.write().await;
-    let target_sid = inner
-        .users
-        .keys()
-        .find(|k| *k == &sid || (sid.len() >= 6 && k.starts_with(&sid)))
-        .cloned();
-    if let Some(full_sid) = target_sid {
-        if let Some(user) = inner.users.get_mut(&full_sid) {
-            user.acl_rule = "allow_all".to_string();
-            user.updated_at = Utc::now();
-            user.expire_at = compute_user_expire_at(user, "allow_all", &state.config);
-            inner.dirty = true;
-            drop(inner);
-            state.store.mark_dirty(state.config.save_interval).await;
-            tracing::info!("Approved (allow_all): {}", full_sid);
-            return (StatusCode::OK, Json(serde_json::json!({ "ok": true })));
-        }
-    }
-    (
-        StatusCode::NOT_FOUND,
-        Json(serde_json::json!({ "ok": false, "error": "User not found" })),
-    )
-}
-
-/// POST /api/users/:sid/revoke (Legacy endpoint -> sets deny_all)
-pub async fn revoke_user_handler(
-    State(state): State<AppState>,
-    Path(sid): Path<String>,
-) -> impl IntoResponse {
-    let mut inner = state.store.inner.write().await;
-    let target_sid = inner
-        .users
-        .keys()
-        .find(|k| *k == &sid || (sid.len() >= 6 && k.starts_with(&sid)))
-        .cloned();
-    if let Some(full_sid) = target_sid {
-        if let Some(user) = inner.users.get_mut(&full_sid) {
-            user.acl_rule = "deny_all".to_string();
-            user.updated_at = Utc::now();
-            user.expire_at = compute_user_expire_at(user, "deny_all", &state.config);
-            inner.dirty = true;
-            drop(inner);
-            state.store.mark_dirty(state.config.save_interval).await;
-            tracing::info!("Revoked (deny_all): {}", full_sid);
             return (StatusCode::OK, Json(serde_json::json!({ "ok": true })));
         }
     }
@@ -536,7 +477,7 @@ pub async fn save_config_handler(
 /// POST /api/config/validate
 pub async fn validate_config_handler(Json(payload): Json<ConfigSaveRequest>) -> impl IntoResponse {
     match crate::acl::parse_and_validate_yaml(&payload.yaml) {
-        Ok((cfg, _)) => {
+        Ok((cfg, _, _)) => {
             let mut rules: Vec<String> = cfg.acl_rules.keys().cloned().collect();
             rules.sort();
             (
@@ -613,6 +554,79 @@ pub async fn update_remark_handler(
         StatusCode::NOT_FOUND,
         Json(serde_json::json!({ "ok": false, "error": "User not found" })),
     )
+}
+
+/// POST /api/users/:sid/extend
+pub async fn extend_user_ttl_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(sid): Path<String>,
+) -> impl IntoResponse {
+    let current_sid = extract_sid(&headers);
+    let mut inner = state.store.inner.write().await;
+    let target_sid = inner
+        .users
+        .keys()
+        .find(|k| *k == &sid || (sid.len() >= 6 && k.starts_with(&sid)))
+        .cloned();
+    let compiled_acl = inner.compiled_acl.clone();
+    if let Some(full_sid) = target_sid {
+        if let Some(user) = inner.users.get_mut(&full_sid) {
+            let is_allowed =
+                compiled_acl.evaluate(&user.acl_rule, "GET", &user.last_seen_domain, "/");
+            let default_ttl = if is_allowed {
+                chrono::Duration::seconds(state.config.cookie_max_age)
+            } else {
+                chrono::Duration::from_std(state.config.unapproved_ttl)
+                    .unwrap_or_else(|_| chrono::Duration::hours(1))
+            };
+
+            let now = Utc::now();
+            let base_time = std::cmp::max(user.expire_at, now);
+            user.expire_at = base_time + default_ttl;
+            user.updated_at = now;
+            let updated_expire_at = user.expire_at;
+            let domain = user.last_seen_domain.clone();
+            let cookie_domain_opt = inner.compiled_acl.resolve_cookie_domain(&domain);
+
+            inner.dirty = true;
+            drop(inner);
+            state.store.mark_dirty(state.config.save_interval).await;
+            tracing::info!(
+                "Extended TTL for user {}: new expire_at={}",
+                full_sid,
+                updated_expire_at
+            );
+
+            let remaining_ttl = (updated_expire_at - now).num_seconds().max(1);
+
+            let mut res = (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "ok": true,
+                    "expire_at": updated_expire_at
+                })),
+            )
+                .into_response();
+
+            if !current_sid.is_empty()
+                && (current_sid == full_sid || full_sid.starts_with(&current_sid))
+            {
+                let set_cookie_hdr =
+                    make_set_cookie(&full_sid, cookie_domain_opt.as_deref(), remaining_ttl);
+                if let Ok(hdr_val) = axum::http::HeaderValue::from_str(&set_cookie_hdr) {
+                    res.headers_mut().insert(header::SET_COOKIE, hdr_val);
+                }
+            }
+
+            return res;
+        }
+    }
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({ "ok": false, "error": "User not found" })),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -721,7 +735,7 @@ mod tests {
             State(state.clone()),
             Path(sid.to_string()),
             Json(RuleRequest {
-                acl_rule: "allow_all".to_string(),
+                acl_rule: "✅ allow_all".to_string(),
             }),
         )
         .await
@@ -785,17 +799,23 @@ mod tests {
             inner.users.insert(test_user.sid.clone(), test_user.clone());
         }
 
-        // Test approve_user_handler (legacy)
-        let app_resp = approve_user_handler(State(state.clone()), Path("123456".to_string()))
-            .await
-            .into_response();
-        assert_eq!(app_resp.status(), StatusCode::OK);
+        // Test update_user_rule_handler
+        let rule_resp = update_user_rule_handler(
+            State(state.clone()),
+            Path("123456".to_string()),
+            Json(RuleRequest {
+                acl_rule: "✅ allow_all".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(rule_resp.status(), StatusCode::OK);
 
         {
             let inner = store.inner.read().await;
             assert_eq!(
                 inner.users.get(&test_user.sid).unwrap().acl_rule,
-                "allow_all"
+                "✅ allow_all"
             );
         }
 
@@ -816,18 +836,36 @@ mod tests {
             assert_eq!(inner.users.get(&test_user.sid).unwrap().remark, "VIP User");
         }
 
-        // Test revoke_user_handler (legacy)
-        let rev_resp = revoke_user_handler(State(state.clone()), Path("123456".to_string()))
-            .await
-            .into_response();
-        assert_eq!(rev_resp.status(), StatusCode::OK);
+        // Test extend_user_ttl_handler
+        let mut ext_headers = HeaderMap::new();
+        ext_headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("fas_sid={}", test_user.sid)).unwrap(),
+        );
+
+        let initial_expire = {
+            let inner = store.inner.read().await;
+            inner.users.get(&test_user.sid).unwrap().expire_at
+        };
+
+        let ext_resp = extend_user_ttl_handler(
+            State(state.clone()),
+            ext_headers,
+            Path("123456".to_string()),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(ext_resp.status(), StatusCode::OK);
+        let ext_cookie = ext_resp.headers().get(header::SET_COOKIE);
+        assert!(ext_cookie.is_some());
+        let ext_cookie_str = ext_cookie.unwrap().to_str().unwrap();
+        assert!(ext_cookie_str.contains("fas_sid=12345678-abcd-efgh-ijkl-1234567890ab"));
 
         {
             let inner = store.inner.read().await;
-            assert_eq!(
-                inner.users.get(&test_user.sid).unwrap().acl_rule,
-                "deny_all"
-            );
+            let extended_expire = inner.users.get(&test_user.sid).unwrap().expire_at;
+            assert!(extended_expire > initial_expire);
         }
 
         // Test delete_user_handler

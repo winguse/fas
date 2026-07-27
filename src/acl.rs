@@ -64,11 +64,11 @@ pub struct CompiledAclConfig {
 impl CompiledAclConfig {
     /// Evaluate an incoming request (method, domain, path) against a rule name.
     /// Returns true if allowed, false if denied.
-    /// Deny rules have higher priority than allow rules.
+    /// If rule_name is not found in acl_rules, returns false (not authorized).
     pub fn evaluate(&self, rule_name: &str, method: &str, domain: &str, path: &str) -> bool {
         let rule = match self.acl_rules.get(rule_name) {
             Some(r) => r,
-            None => return false, // Unknown rule defaults to deny
+            None => return false, // Unknown/missing rule defaults to deny
         };
 
         // 1. Check DENY rules first (highest priority)
@@ -144,12 +144,15 @@ fn extract_parent_domain(host: &str, pattern_str: &str, levels: usize) -> String
     }
 }
 
-/// Create default fallback AclConfig containing `allow_all` and `deny_all`
+pub const DEFAULT_ALLOW_RULE: &str = "✅ allow_all";
+pub const DEFAULT_DENY_RULE: &str = "🚫 deny_all";
+
+/// Create default fallback AclConfig containing `DEFAULT_ALLOW_RULE` and `DEFAULT_DENY_RULE`
 pub fn default_acl_config() -> AclConfig {
     let mut acl_rules = HashMap::new();
 
     acl_rules.insert(
-        "allow_all".to_string(),
+        DEFAULT_ALLOW_RULE.to_string(),
         AclRule {
             allow: vec![AclMatchRule {
                 method: ".*".to_string(),
@@ -161,7 +164,7 @@ pub fn default_acl_config() -> AclConfig {
     );
 
     acl_rules.insert(
-        "deny_all".to_string(),
+        DEFAULT_DENY_RULE.to_string(),
         AclRule {
             allow: vec![],
             deny: vec![AclMatchRule {
@@ -179,41 +182,23 @@ pub fn default_acl_config() -> AclConfig {
 }
 
 /// Parse and validate YAML string into AclConfig and CompiledAclConfig.
-/// Enforces default rules (`allow_all` and `deny_all`) if missing.
-pub fn parse_and_validate_yaml(yaml_str: &str) -> Result<(AclConfig, CompiledAclConfig), String> {
+/// Returns (AclConfig, CompiledAclConfig, was_generated).
+/// If no rules are defined in the YAML, generates default rules (`✅ allow_all` and `🚫 deny_all`).
+pub fn parse_and_validate_yaml(
+    yaml_str: &str,
+) -> Result<(AclConfig, CompiledAclConfig, bool), String> {
+    let mut was_generated = false;
     let mut config: AclConfig = if yaml_str.trim().is_empty() {
+        was_generated = true;
         default_acl_config()
     } else {
         serde_yaml::from_str(yaml_str).map_err(|e| format!("YAML parse error: {}", e))?
     };
 
-    // Ensure default rules exist
-    if !config.acl_rules.contains_key("allow_all") {
-        config.acl_rules.insert(
-            "allow_all".to_string(),
-            AclRule {
-                allow: vec![AclMatchRule {
-                    method: ".*".to_string(),
-                    domain: ".*".to_string(),
-                    path: ".*".to_string(),
-                }],
-                deny: vec![],
-            },
-        );
-    }
-
-    if !config.acl_rules.contains_key("deny_all") {
-        config.acl_rules.insert(
-            "deny_all".to_string(),
-            AclRule {
-                allow: vec![],
-                deny: vec![AclMatchRule {
-                    method: ".*".to_string(),
-                    domain: ".*".to_string(),
-                    path: ".*".to_string(),
-                }],
-            },
-        );
+    if config.acl_rules.is_empty() {
+        was_generated = true;
+        let def = default_acl_config();
+        config.acl_rules = def.acl_rules;
     }
 
     // Validate and compile cookie_domains mapping
@@ -309,7 +294,7 @@ pub fn parse_and_validate_yaml(yaml_str: &str) -> Result<(AclConfig, CompiledAcl
         acl_rules: compiled_acl_rules,
     };
 
-    Ok((config, compiled))
+    Ok((config, compiled, was_generated))
 }
 
 #[cfg(test)]
@@ -334,7 +319,7 @@ acl_rules:
         path: "^/admin/.*$"
 "#;
 
-        let (_, compiled) = parse_and_validate_yaml(yaml).expect("Failed to parse YAML");
+        let (_, compiled, _) = parse_and_validate_yaml(yaml).expect("Failed to parse YAML");
 
         // GET /api/users -> Allowed
         assert!(compiled.evaluate("test_rule", "GET", "example.com", "/api/users"));
@@ -356,7 +341,7 @@ cookie_domains:
   "^.*\\.b\\.a\\.com$": 1
 "#;
 
-        let (_, compiled) = parse_and_validate_yaml(yaml).expect("Failed to parse YAML");
+        let (_, compiled, _) = parse_and_validate_yaml(yaml).expect("Failed to parse YAML");
 
         // sub.b.a.com -> 1 level up from b.a.com = a.com
         assert_eq!(
@@ -402,15 +387,29 @@ cookie_domains:
 
     #[test]
     fn test_empty_yaml_defaults() {
-        let (config, compiled) = parse_and_validate_yaml("").expect("Failed to parse empty YAML");
-        assert!(config.acl_rules.contains_key("allow_all"));
-        assert!(config.acl_rules.contains_key("deny_all"));
+        let (config, compiled, was_generated) =
+            parse_and_validate_yaml("").expect("Failed to parse empty YAML");
+        assert!(was_generated);
+        assert!(config.acl_rules.contains_key("✅ allow_all"));
+        assert!(config.acl_rules.contains_key("🚫 deny_all"));
 
         // allow_all allows everything
-        assert!(compiled.evaluate("allow_all", "GET", "example.com", "/foo"));
+        assert!(compiled.evaluate("✅ allow_all", "GET", "example.com", "/foo"));
 
         // deny_all denies everything
-        assert!(!compiled.evaluate("deny_all", "GET", "example.com", "/foo"));
+        assert!(!compiled.evaluate("🚫 deny_all", "GET", "example.com", "/foo"));
+    }
+
+    #[test]
+    fn test_missing_rule_returns_not_authorized() {
+        let (config, compiled, was_generated) =
+            parse_and_validate_yaml("").expect("Failed to parse empty YAML");
+        assert!(was_generated);
+        assert!(config.acl_rules.contains_key("✅ allow_all"));
+
+        // Unhandled / missing rule names return false (not authorized)
+        assert!(!compiled.evaluate("allow_all", "GET", "example.com", "/foo"));
+        assert!(!compiled.evaluate("unknown_rule", "GET", "example.com", "/foo"));
     }
 
     #[test]

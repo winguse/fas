@@ -59,11 +59,53 @@ pub fn format_relative_time(locale: Locale, dt: chrono::DateTime<chrono::Utc>) -
     }
 }
 
+pub fn format_expire_time(locale: Locale, dt: chrono::DateTime<chrono::Utc>) -> String {
+    let now = chrono::Utc::now();
+    let seconds = dt.signed_duration_since(now).num_seconds();
+
+    let is_zh = locale == Locale::Zh;
+
+    if seconds <= 0 {
+        if is_zh {
+            "已过期".to_string()
+        } else {
+            "Expired".to_string()
+        }
+    } else if seconds < 60 {
+        if is_zh {
+            format!("{}秒", seconds)
+        } else {
+            format!("{}s", seconds)
+        }
+    } else if seconds < 3600 {
+        let mins = (seconds + 30) / 60;
+        if is_zh {
+            format!("{}分钟", mins)
+        } else {
+            format!("{}m", mins)
+        }
+    } else if seconds < 86400 {
+        let hours = (seconds + 1800) / 3600;
+        if is_zh {
+            format!("{}小时", hours)
+        } else {
+            format!("{}h", hours)
+        }
+    } else {
+        let days = (seconds + 43200) / 86400;
+        if is_zh {
+            format!("{}天", days)
+        } else {
+            format!("{}d", days)
+        }
+    }
+}
+
 pub fn admin_table_rows(locale: Locale, users: &[User], available_rules: &[String]) -> String {
     let s = t(locale);
     if users.is_empty() {
         return format!(
-            "<tr><td colspan=\"11\" class=\"empty\">{}</td></tr>",
+            "<tr><td colspan=\"12\" class=\"empty\">{}</td></tr>",
             s.admin_empty
         );
     }
@@ -110,6 +152,13 @@ pub fn admin_table_rows(locale: Locale, users: &[User], available_rules: &[Strin
             let relative_created = format_relative_time(locale, u.created_at);
             let created_at_display = format!("{} ({})", created_at_str, relative_created);
 
+            let expire_str = u.expire_at.format("%Y-%m-%d %H:%M:%S").to_string();
+            let relative_expire = format_expire_time(locale, u.expire_at);
+            let expire_display = format!(
+                r#"<span title="{}">{}</span> <button class="btn btn-gray btn-sm" style="padding:0.15rem 0.4rem; font-size:0.7rem; margin-left:0.25rem;" onclick="extendTtl('{}')">{}</button>"#,
+                expire_str, relative_expire, short_sid, s.btn_extend
+            );
+
             let ip = if u.last_ip.is_empty() { "-" } else { &u.last_ip };
             let ua_short = short_ua(&u.user_agent);
             let remark_escaped = escape_html(&u.remark);
@@ -121,6 +170,7 @@ pub fn admin_table_rows(locale: Locale, users: &[User], available_rules: &[Strin
         <td>{}</td>
         <td class="mono">{}</td>
         <td>{}</td>
+        <td class="mono">{}</td>
         <td class="mono">{}</td>
         <td class="mono">{}</td>
         <td class="ua-cell" title="{}">{}</td>
@@ -136,6 +186,7 @@ pub fn admin_table_rows(locale: Locale, users: &[User], available_rules: &[Strin
                 rule_dropdown,
                 escape_html(ip),
                 last_seen_display,
+                expire_display,
                 escape_html(&u.user_agent),
                 escape_html(&ua_short),
                 u.request_count,
@@ -296,6 +347,7 @@ pub fn admin_page(
     <th class="sortable" data-col="acl_rule" onclick="handleSortClick('acl_rule')">{admin_th_status}<span class="sort-icon" id="sort-icon-acl_rule"></span></th>
     <th class="sortable" data-col="last_ip" onclick="handleSortClick('last_ip')">{admin_th_ip}<span class="sort-icon" id="sort-icon-last_ip"></span></th>
     <th class="sortable" data-col="last_seen" onclick="handleSortClick('last_seen')">{admin_th_last_seen}<span class="sort-icon" id="sort-icon-last_seen"></span></th>
+    <th class="sortable" data-col="expire_at" onclick="handleSortClick('expire_at')">{admin_th_expires}<span class="sort-icon" id="sort-icon-expire_at"></span></th>
     <th class="sortable" data-col="user_agent" onclick="handleSortClick('user_agent')">{admin_th_ua}<span class="sort-icon" id="sort-icon-user_agent"></span></th>
     <th class="sortable" data-col="request_count" onclick="handleSortClick('request_count')">{admin_th_req_count}<span class="sort-icon" id="sort-icon-request_count"></span></th>
     <th class="sortable" data-col="remark" onclick="handleSortClick('remark')">{admin_th_remark}<span class="sort-icon" id="sort-icon-remark"></span></th>
@@ -347,6 +399,7 @@ const i18n = {{
   toastApproved: {toast_approved_json},
   toastRevoked: {toast_revoked_json},
   toastDeleted: {toast_deleted_json},
+  toastExtended: {toast_extended_json},
   toastFailed: {toast_failed_json},
   confirmRevoke: {confirm_revoke_json},
   confirmDelete: {confirm_delete_json},
@@ -356,6 +409,7 @@ const i18n = {{
   btnRevoke: {btn_revoke_json},
   btnApprove: {btn_approve_json},
   btnDelete: {btn_delete_json},
+  btnExtend: {btn_extend_json},
 }};
 
 let availableRules = {acl_rules_json};
@@ -447,6 +501,29 @@ function formatRelativeTime(dateStr) {{
   }}
 }}
 
+function formatExpireTime(dateStr) {{
+  if (!dateStr) return '-';
+  const dt = new Date(dateStr);
+  const now = new Date();
+  const seconds = Math.floor((dt - now) / 1000);
+  const isZh = document.documentElement.lang === 'zh';
+
+  if (seconds <= 0) {{
+    return isZh ? '已过期' : 'Expired';
+  }} else if (seconds < 60) {{
+    return isZh ? seconds + '秒' : seconds + 's';
+  }} else if (seconds < 3600) {{
+    const mins = Math.round(seconds / 60);
+    return isZh ? mins + '分钟' : mins + 'm';
+  }} else if (seconds < 86400) {{
+    const hours = Math.round(seconds / 3600);
+    return isZh ? hours + '小时' : hours + 'h';
+  }} else {{
+    const days = Math.round(seconds / 86400);
+    return isZh ? days + '天' : days + 'd';
+  }}
+}}
+
 function updateStats(totalUsers, totalReqs) {{
   document.getElementById('total-users').textContent = totalUsers;
   document.getElementById('total-reqs').textContent = totalReqs;
@@ -494,36 +571,56 @@ function updateGlobalDropdown(input) {{
     }}
   }}
   
-  const allOptions = new Set([...presets, ...existing]);
+  const allOptions = Array.from(new Set([...presets, ...existing]));
+  
+  const scoredOptions = allOptions.map((opt, originalIndex) => {{
+    const optLower = opt.toLowerCase();
+    let score = 0;
+    
+    if (filterText !== '') {{
+      if (optLower === filterText) {{
+        score = 100;
+      }} else if (optLower.startsWith(filterText)) {{
+        score = 80;
+      }} else if (optLower.includes(filterText)) {{
+        score = 60;
+      }} else {{
+        const words = optLower.split(/\s+/);
+        if (words.some(w => w.startsWith(filterText))) {{
+          score = 70;
+        }} else if (words.some(w => w.includes(filterText))) {{
+          score = 50;
+        }} else {{
+          score = 0;
+        }}
+      }}
+    }}
+    
+    return {{ opt, score, originalIndex }};
+  }});
+  
+  scoredOptions.sort((a, b) => {{
+    if (b.score !== a.score) {{
+      return b.score - a.score;
+    }}
+    return a.originalIndex - b.originalIndex;
+  }});
   
   let html = '';
-  let count = 0;
-  for (const opt of allOptions) {{
-    if (filterText === '' || opt.toLowerCase().includes(filterText)) {{
-      html += '<div class="dropdown-item" onmousedown="window.selectGlobalOption(\'' + escapeHtml(opt) + '\')">' + escapeHtml(opt) + '</div>';
-      count++;
-    }}
+  for (const item of scoredOptions) {{
+    html += '<div class="dropdown-item" onmousedown="window.selectGlobalOption(\'' + escapeHtml(item.opt) + '\')">' + escapeHtml(item.opt) + '</div>';
   }}
   
-  if (count === 0) {{
-    dropdown.style.display = 'none';
-  }} else {{
-    dropdown.style.display = 'block';
-  }}
+  dropdown.style.display = 'block';
   dropdown.innerHTML = html;
 }}
 
 function handleRemarkInput(input) {{
-  input.setAttribute('data-dirty', 'true');
   updateGlobalDropdown(input);
 }}
 
 function showDropdown(input) {{
   window.activeRemarkInput = input;
-  input.setAttribute('data-original-val', input.value);
-  input.setAttribute('data-dirty', 'false');
-  input.value = '';
-  
   updateGlobalDropdown(input);
   
   const dropdown = document.getElementById('global-remark-dropdown');
@@ -544,9 +641,6 @@ function hideDropdown(input) {{
       dropdown.classList.remove('show');
       dropdown.style.display = 'none';
     }}
-    if (input.getAttribute('data-dirty') !== 'true') {{
-      input.value = input.getAttribute('data-original-val') || '';
-    }}
     if (window.activeRemarkInput === input) {{
       window.activeRemarkInput = null;
     }}
@@ -557,7 +651,6 @@ window.selectGlobalOption = (val) => {{
   const input = window.activeRemarkInput;
   if (input) {{
     input.value = val;
-    input.setAttribute('data-dirty', 'true');
     const sid = input.getAttribute('data-sid');
     window.updateRemark(sid, val);
   }}
@@ -655,7 +748,7 @@ function applySort() {{
 }}
 
 function updateSortIcons() {{
-  const ids = ['sid', 'last_seen_domain', 'created_at', 'acl_rule', 'last_ip', 'last_seen', 'user_agent', 'request_count', 'remark'];
+  const ids = ['sid', 'last_seen_domain', 'created_at', 'acl_rule', 'last_ip', 'last_seen', 'expire_at', 'user_agent', 'request_count', 'remark'];
   for (const id of ids) {{
     const el = document.getElementById('sort-icon-' + id);
     if (el) {{
@@ -671,7 +764,7 @@ function updateSortIcons() {{
 function renderTablePage() {{
   const tbody = document.getElementById('user-list');
   if (!filteredUsers || filteredUsers.length === 0) {{
-    tbody.innerHTML = '<tr><td colspan="11" class="empty">' + escapeHtml(i18n.adminEmpty) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" class="empty">' + escapeHtml(i18n.adminEmpty) + '</td></tr>';
     updatePaginationBar();
     updateBatchBar();
     return;
@@ -719,6 +812,11 @@ function renderTablePage() {{
     const relativeCreated = formatRelativeTime(u.created_at);
     const createdAtDisplay = createdAtStr + ' (' + relativeCreated + ')';
     
+    const expireStr = formatDateTime(u.expire_at);
+    const relativeExpire = formatExpireTime(u.expire_at);
+    const expireDisplay = '<span title="' + escapeHtml(expireStr) + '">' + escapeHtml(relativeExpire) + '</span> ' +
+      '<button class="btn btn-gray btn-sm" style="padding:0.15rem 0.4rem; font-size:0.7rem; margin-left:0.25rem;" onclick="extendTtl(\'' + escapeHtml(shortSid) + '\')">' + escapeHtml(i18n.btnExtend) + '</button>';
+
     const ip = u.last_ip || '-';
     const uaShort = shortUa(u.user_agent);
     const remarkVal = (shortSid === activeSid) ? activeVal : (u.remark || '');
@@ -732,6 +830,7 @@ function renderTablePage() {{
       '<td>' + ruleSelect + '</td>' +
       '<td class="mono">' + escapeHtml(ip) + '</td>' +
       '<td class="mono">' + escapeHtml(lastSeenDisplay) + '</td>' +
+      '<td class="mono">' + expireDisplay + '</td>' +
       '<td class="ua-cell" title="' + escapeHtml(u.user_agent) + '">' + escapeHtml(uaShort) + '</td>' +
       '<td class="mono">' + u.request_count + '</td>' +
       '<td>' +
@@ -1112,6 +1211,17 @@ window.updateRemark = async (sid, val) => {{
   }}
 }};
 
+window.extendTtl = async (sid) => {{
+  const isZh = document.documentElement.lang === 'zh';
+  const data = await api('/api/users/' + encodeURIComponent(sid) + '/extend', 'POST');
+  if (data.ok) {{
+    showToast(i18n.toastExtended || (isZh ? '已延长有效期' : 'TTL extended'));
+    await loadData();
+  }} else {{
+    showToast(i18n.toastFailed + (data.error ? ': ' + data.error : ''));
+  }}
+}};
+
 updateRuleSelects();
 loadData();
 
@@ -1141,6 +1251,7 @@ setInterval(() => {{
         admin_th_status = s.admin_th_status,
         admin_th_ip = s.admin_th_ip,
         admin_th_last_seen = s.admin_th_last_seen,
+        admin_th_expires = s.admin_th_expires,
         admin_th_ua = s.admin_th_ua,
         admin_th_req_count = s.admin_th_req_count,
         admin_th_remark = s.admin_th_remark,
@@ -1150,6 +1261,7 @@ setInterval(() => {{
         toast_approved_json = serde_json::to_string(s.toast_approved).unwrap(),
         toast_revoked_json = serde_json::to_string(s.toast_revoked).unwrap(),
         toast_deleted_json = serde_json::to_string(s.toast_deleted).unwrap(),
+        toast_extended_json = serde_json::to_string(s.toast_extended).unwrap(),
         toast_failed_json = serde_json::to_string(s.toast_failed).unwrap(),
         confirm_revoke_json = serde_json::to_string(s.confirm_revoke).unwrap(),
         confirm_delete_json = serde_json::to_string(s.confirm_delete).unwrap(),
@@ -1159,6 +1271,7 @@ setInterval(() => {{
         btn_revoke_json = serde_json::to_string(s.btn_revoke).unwrap(),
         btn_approve_json = serde_json::to_string(s.btn_approve).unwrap(),
         btn_delete_json = serde_json::to_string(s.btn_delete).unwrap(),
+        btn_extend_json = serde_json::to_string(s.btn_extend).unwrap(),
         acl_rules_json = serde_json::to_string(acl_rules).unwrap(),
     )
 }
@@ -1358,6 +1471,47 @@ mod tests {
         assert_eq!(
             format_relative_time(Locale::Zh, now - Duration::days(3)),
             "3天前"
+        );
+    }
+
+    #[test]
+    fn test_format_expire_time() {
+        assert_eq!(
+            format_expire_time(Locale::En, Utc::now() - Duration::seconds(10)),
+            "Expired"
+        );
+        let res_s = format_expire_time(Locale::En, Utc::now() + Duration::seconds(30));
+        assert!(res_s == "30s" || res_s == "29s");
+        assert_eq!(
+            format_expire_time(Locale::En, Utc::now() + Duration::minutes(15)),
+            "15m"
+        );
+        assert_eq!(
+            format_expire_time(Locale::En, Utc::now() + Duration::hours(4)),
+            "4h"
+        );
+        assert_eq!(
+            format_expire_time(Locale::En, Utc::now() + Duration::days(90)),
+            "90d"
+        );
+
+        assert_eq!(
+            format_expire_time(Locale::Zh, Utc::now() - Duration::seconds(10)),
+            "已过期"
+        );
+        let res_zh_s = format_expire_time(Locale::Zh, Utc::now() + Duration::seconds(30));
+        assert!(res_zh_s == "30秒" || res_zh_s == "29秒");
+        assert_eq!(
+            format_expire_time(Locale::Zh, Utc::now() + Duration::minutes(15)),
+            "15分钟"
+        );
+        assert_eq!(
+            format_expire_time(Locale::Zh, Utc::now() + Duration::hours(4)),
+            "4小时"
+        );
+        assert_eq!(
+            format_expire_time(Locale::Zh, Utc::now() + Duration::days(90)),
+            "90天"
         );
     }
 }

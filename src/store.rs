@@ -56,18 +56,17 @@ impl<'de> Deserialize<'de> for User {
 
         let acl_rule = helper.acl_rule.unwrap_or_else(|| {
             if helper.approved == Some(true) {
-                "allow_all".to_string()
+                crate::acl::DEFAULT_ALLOW_RULE.to_string()
             } else {
-                "deny_all".to_string()
+                String::new()
             }
         });
 
         let expire_at = helper.expire_at.unwrap_or_else(|| {
-            let is_deny_rule = acl_rule == "deny_all" || acl_rule == "deny";
-            let default_duration = if is_deny_rule {
-                chrono::Duration::hours(1)
-            } else {
+            let default_duration = if acl_rule == crate::acl::DEFAULT_ALLOW_RULE {
                 chrono::Duration::seconds(90 * 24 * 60 * 60)
+            } else {
+                chrono::Duration::hours(1)
             };
             helper.created_at + default_duration
         });
@@ -109,8 +108,8 @@ pub struct Store {
 
 impl Store {
     pub fn new(data_file: PathBuf, acl_file: PathBuf) -> Self {
-        let (default_cfg, default_compiled) = parse_and_validate_yaml("")
-            .unwrap_or_else(|_| (default_acl_config(), CompiledAclConfig::default()));
+        let (default_cfg, default_compiled, _) = parse_and_validate_yaml("")
+            .unwrap_or_else(|_| (default_acl_config(), CompiledAclConfig::default(), true));
         let default_yaml = serde_yaml::to_string(&default_cfg).unwrap_or_default();
 
         Self {
@@ -139,11 +138,25 @@ impl Store {
 
         if !acl_file.exists() {
             tracing::info!(
-                "No existing ACL file at {:?} — using default ACL config",
+                "No existing ACL file at {:?} — generating default ACL config with emojis and saving to disk",
                 acl_file
             );
-            let (cfg, compiled) = parse_and_validate_yaml("").unwrap();
-            let yaml_str = serde_yaml::to_string(&cfg).unwrap();
+            let (cfg, compiled, _) = parse_and_validate_yaml("").unwrap();
+            let yaml_str = serde_yaml::to_string(&cfg).unwrap_or_default();
+
+            if let Some(parent) = acl_file.parent() {
+                let _ = fs::create_dir_all(parent).await;
+            }
+            if let Err(e) = fs::write(&acl_file, &yaml_str).await {
+                tracing::error!(
+                    "Failed to save generated ACL config to {:?}: {}",
+                    acl_file,
+                    e
+                );
+            } else {
+                tracing::info!("Saved generated default ACL config to {:?}", acl_file);
+            }
+
             let mut inner = self.inner.write().await;
             inner.acl_yaml = yaml_str;
             inner.acl_config = cfg;
@@ -153,11 +166,23 @@ impl Store {
 
         let content = fs::read_to_string(&acl_file).await?;
         match parse_and_validate_yaml(&content) {
-            Ok((cfg, compiled)) => {
+            Ok((cfg, compiled, was_generated)) => {
+                let (final_yaml, final_cfg, final_compiled) = if was_generated {
+                    let generated_yaml = serde_yaml::to_string(&cfg).unwrap_or_default();
+                    if let Some(parent) = acl_file.parent() {
+                        let _ = fs::create_dir_all(parent).await;
+                    }
+                    let _ = fs::write(&acl_file, &generated_yaml).await;
+                    tracing::info!("Saved generated default ACL config to {:?}", acl_file);
+                    (generated_yaml, cfg, compiled)
+                } else {
+                    (content, cfg, compiled)
+                };
+
                 let mut inner = self.inner.write().await;
-                inner.acl_yaml = content;
-                inner.acl_config = cfg;
-                inner.compiled_acl = compiled;
+                inner.acl_yaml = final_yaml;
+                inner.acl_config = final_cfg;
+                inner.compiled_acl = final_compiled;
                 tracing::info!("Loaded ACL config from {:?}", acl_file);
                 Ok(())
             }
@@ -170,7 +195,7 @@ impl Store {
 
     /// Update ACL YAML config in memory and save to disk
     pub async fn update_acl(&self, yaml_str: &str) -> Result<(), String> {
-        let (cfg, compiled) = parse_and_validate_yaml(yaml_str)?;
+        let (cfg, compiled, _) = parse_and_validate_yaml(yaml_str)?;
 
         let acl_file = {
             let mut inner = self.inner.write().await;
@@ -301,8 +326,8 @@ impl Store {
     /// Purge expired records (based on expire_at or cookie max age / unapproved TTL)
     pub async fn purge_old_records(
         &self,
-        cookie_max_age: Duration,
-        unapproved_ttl: Duration,
+        _cookie_max_age: Duration,
+        _unapproved_ttl: Duration,
     ) -> usize {
         let mut to_delete = Vec::new();
         let now_utc = Utc::now();
@@ -310,19 +335,7 @@ impl Store {
         {
             let inner = self.inner.read().await;
             for (sid, user) in inner.users.iter() {
-                let elapsed_created = now_utc.signed_duration_since(user.created_at);
-
-                let max_age_chrono = chrono::Duration::from_std(cookie_max_age)
-                    .unwrap_or_else(|_| chrono::Duration::max_value());
-                let unapp_ttl_chrono = chrono::Duration::from_std(unapproved_ttl)
-                    .unwrap_or_else(|_| chrono::Duration::max_value());
-
-                let is_deny_rule = user.acl_rule == "deny_all" || user.acl_rule == "deny";
-
-                if now_utc >= user.expire_at
-                    || elapsed_created >= max_age_chrono
-                    || (is_deny_rule && elapsed_created >= unapp_ttl_chrono)
-                {
+                if now_utc >= user.expire_at {
                     to_delete.push(sid.clone());
                 }
             }
@@ -506,7 +519,7 @@ mod tests {
             .expect("Failed to deserialize legacy approved user");
         assert_eq!(u.sid, "legacy-1");
         assert_eq!(u.last_seen_domain, "olddomain.com");
-        assert_eq!(u.acl_rule, "allow_all");
+        assert_eq!(u.acl_rule, "✅ allow_all");
         // Computed expire_at for allow_all should be created_at + 90 days (cookie max age)
         assert_eq!(u.expire_at, u.created_at + ChronoDuration::days(90));
 
@@ -526,7 +539,7 @@ mod tests {
             .expect("Failed to deserialize legacy unapproved user");
         assert_eq!(u2.sid, "legacy-2");
         assert_eq!(u2.last_seen_domain, "olddomain2.com");
-        assert_eq!(u2.acl_rule, "deny_all");
+        assert_eq!(u2.acl_rule, "");
         // Computed expire_at for deny_all should be created_at + 1 hour
         assert_eq!(u2.expire_at, u2.created_at + ChronoDuration::hours(1));
     }
@@ -592,6 +605,26 @@ mod tests {
             assert!(inner.users.contains_key("active-1"));
             assert!(!inner.users.contains_key("expired-1"));
         }
+
+        let _ = std::fs::remove_file(temp_data);
+        let _ = std::fs::remove_file(temp_acl);
+    }
+
+    #[tokio::test]
+    async fn test_load_acl_saves_generated_defaults_to_disk() {
+        let temp_dir = std::env::temp_dir();
+        let temp_data = temp_dir.join(format!("test_fas_savedef_{}.jsonl", uuid::Uuid::new_v4()));
+        let temp_acl = temp_dir.join(format!("test_fas_savedef_{}.yaml", uuid::Uuid::new_v4()));
+        assert!(!temp_acl.exists());
+
+        let store = Store::new(temp_data.clone(), temp_acl.clone());
+        store.load_acl().await.expect("load_acl failed");
+
+        // Verify that the file was created on disk and contains default emoji rules
+        assert!(temp_acl.exists());
+        let saved_yaml = std::fs::read_to_string(&temp_acl).expect("Failed to read saved ACL file");
+        assert!(saved_yaml.contains("✅ allow_all"));
+        assert!(saved_yaml.contains("🚫 deny_all"));
 
         let _ = std::fs::remove_file(temp_data);
         let _ = std::fs::remove_file(temp_acl);

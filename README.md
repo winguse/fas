@@ -7,7 +7,7 @@ FAS (Forward Auth Service) is a lightweight visitor access control service desig
 - **Forward Auth Middleware Compatible**: Inspects and intercepts traffic via the standard `/_auth` route.
 - **Granular ACL Control**: Define access control rules by HTTP Method, Domain, and URL Path using regular expressions (Regex).
   - **Deny-First Priority**: Deny rules take precedence over allow rules.
-  - **Default Fallback Rules**: `allow_all` (allow everything) and `deny_all` (deny everything) are automatically initialized.
+  - **Default Fallback Rules**: If no rules are defined in `acl.yaml`, `✅ allow_all` (allow everything) and `🚫 deny_all` (deny everything) are automatically initialized. New visitors receive an empty rule (`""`), defaulting to deny.
 - **Cookie Domain Scope Control**:
   - **Default**: Omit the `Domain` attribute in `Set-Cookie` headers, restricting cookies strictly to exact host matches (excluding subdomains).
   - **Configurable Scope Mapping**: Map domain regex patterns to parent domain levels (e.g., `^.*\.b\.a\.com$: 1` writes `Domain=a.com`) or explicit domain strings.
@@ -67,13 +67,13 @@ cookie_domains:
 
 # ACL Rule Definitions (Regex Patterns)
 acl_rules:
-  allow_all:
+  "✅ allow_all":
     allow:
       - method: ".*"
         domain: ".*"
         path: ".*"
 
-  deny_all:
+  "🚫 deny_all":
     deny:
       - method: ".*"
         domain: ".*"
@@ -182,6 +182,6 @@ If the admin dashboard is placed behind `fas-auth`, assign your session cookie a
    ```bash
    curl -X POST http://localhost:8080/api/users/<your-uuid>/rule \
      -H "Content-Type: application/json" \
-     -d '{"acl_rule": "allow_all"}'
+     -d '{"acl_rule": "✅ allow_all"}'
    ```
 3. Refresh your browser page. Your session is now authorized, and you can manage visitors and ACL rules from the Admin dashboard.

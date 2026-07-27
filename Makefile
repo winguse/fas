@@ -3,7 +3,7 @@
 run:
 	@echo "Starting FAS server on port 8080..."
 	@echo "Access the admin page at http://localhost:8080/"
-	FAS_DATA_FILE=fas.jsonl FAS_PORT=8080 cargo run
+	FAS_ACL_FILE=acl.yaml FAS_DATA_FILE=fas.jsonl FAS_PORT=8080 cargo run
 
 test:
 	cargo test
