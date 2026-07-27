@@ -94,7 +94,10 @@ where
     B: Send + 'static,
 {
     // Always allow /_auth through (visitor auth endpoint)
-    if req.uri().path() == "/_auth" || req.uri().path() == "/_health" || req.uri().path() == "/_ready" {
+    if req.uri().path() == "/_auth"
+        || req.uri().path() == "/_health"
+        || req.uri().path() == "/_ready"
+    {
         return next.run(req).await;
     }
 
