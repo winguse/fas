@@ -17,6 +17,7 @@ FAS (Forward Auth Service) is a lightweight visitor access control service desig
 - **IP-Based Rate Limiting**: Limit unapproved requests to 1 request per 5 seconds per IP, returning a `429 Too Many Requests` page with an interactive countdown timer.
 - **Multi-lingual Support**: Automatically detects language preferences (`Accept-Language` headers) and serves pages in English (`en`) or Chinese (`zh-CN`).
 - **Secure Dashboard**: Tabbed administrative interface to manage visitor ACL rules, search/filter users, and edit ACL/Cookie YAML configuration.
+- **Shared Secret Protection**: Optionally enforce a `X-Shared-Secret` header (set via `FAS_SHARED_SECRET`) on all endpoints except `/_auth`, ensuring the admin portal and APIs are only reachable through the upstream proxy (e.g. Traefik) and not directly from other pods in the cluster.
 - **Secure Runtime Container**: Multi-arch Docker images built on secure, ultra-minimal `gcr.io/distroless/cc-debian12`.
 
 ---
@@ -142,7 +143,7 @@ docker run -d \
 
 Integrate FAS as a `ForwardAuth` middleware in your Traefik router setup.
 
-### 1. Define the Middleware
+### 1. Define the ForwardAuth Middleware
 ```yaml
 # YAML dynamic configuration
 http:
@@ -168,21 +169,60 @@ http:
         - fas-auth
 ```
 
+### 3. Protect the Admin Portal with a Shared Secret (Recommended for Kubernetes)
+
+In Kubernetes, other pods can reach the FAS admin portal and APIs directly via the cluster network. Set `FAS_SHARED_SECRET` and configure Traefik to inject `X-Shared-Secret` on every request to FAS. FAS rejects any request missing the header, so only traffic routed through Traefik can reach the admin UI.
+
+**FAS deployment environment variable:**
+```yaml
+env:
+  - name: FAS_SHARED_SECRET
+    value: "your-strong-random-secret"
+```
+
+**Traefik middleware to inject the header:**
+```yaml
+http:
+  middlewares:
+    fas-inject-secret:
+      headers:
+        customRequestHeaders:
+          X-Shared-Secret: "your-strong-random-secret"
+```
+
+**Apply both middlewares to the FAS router:**
+```yaml
+http:
+  routers:
+    fas-admin-router:
+      rule: "Host(`fas.example.com`)"
+      service: fas-service
+      middlewares:
+        - fas-inject-secret   # injects X-Shared-Secret before FAS sees the request
+```
+
+> **Note:** `/_auth` is always exempt from the shared secret check — Traefik's ForwardAuth calls that endpoint directly and does not need the header.
+
 ---
 
 ## Admin Panel & Bootstrapping Protection
 
-### Option A: Restrict Admin Access at Proxy Level (Recommended)
-Keep the administrator interface `/` and APIs `/api/*` protected by restricting them to local networks, VPNs, or requiring mTLS certificate verification.
+### Option A: Shared Secret (Recommended for Kubernetes)
+Set `FAS_SHARED_SECRET` and configure Traefik to inject `X-Shared-Secret` on every request to FAS (see **Traefik Integration** above). This ensures the admin portal and APIs are unreachable directly from within the cluster.
 
-### Option B: Bootstrap Admin Session via API
-If the admin dashboard is placed behind `fas-auth`, assign your session cookie an allowed rule (`allow_all`) via `curl`:
+### Option B: Restrict at Proxy Level
+Keep the administrator interface `/` and APIs `/api/*` protected by restricting them to local networks, VPNs, or requiring mTLS certificate verification at the proxy layer.
+
+### Bootstrapping Admin Access
+If the admin dashboard is placed behind `fas-auth`, assign your session cookie an allowed rule via `curl`:
 
 1. Access the application in your browser to generate a session cookie, and copy your visitor ID from the pending approval page.
-2. Run a `curl` command from your host machine to assign the `allow_all` ACL rule to your session ID:
+2. Run a `curl` command from your host machine to assign the `✅ allow_all` ACL rule to your session ID:
    ```bash
+   # If FAS_SHARED_SECRET is set, include the header:
    curl -X POST http://localhost:8080/api/users/<your-uuid>/rule \
      -H "Content-Type: application/json" \
+     -H "X-Shared-Secret: your-strong-random-secret" \
      -d '{"acl_rule": "✅ allow_all"}'
    ```
 3. Refresh your browser page. Your session is now authorized, and you can manage visitors and ACL rules from the Admin dashboard.
