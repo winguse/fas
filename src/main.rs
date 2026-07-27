@@ -119,6 +119,8 @@ async fn main() {
         config: config.clone(),
     };
 
+    // Build optional token-check middleware closure
+    let shared_secret = config.shared_secret.clone();
     let app = Router::new()
         .route("/_health", get(handlers::health_check))
         .route("/_auth", get(handlers::auth_handler))
@@ -147,6 +149,9 @@ async fn main() {
             "/api/config/validate",
             post(handlers::validate_config_handler),
         )
+        .layer(axum::middleware::from_fn(move |req, next| {
+            handlers::shared_secret_middleware(shared_secret.clone(), req, next)
+        }))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 

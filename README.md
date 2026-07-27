@@ -48,6 +48,7 @@ The application is structured cleanly:
 | `FAS_PURGE_INTERVAL_SECS` | Interval at which database TTL purges run | `3600` (1 hour) |
 | `FAS_RATE_LIMIT_WINDOW_SECS`| Minimum interval between requests for unapproved visitors | `5` (5 seconds) |
 | `FAS_SAVE_INTERVAL_SECS` | Throttle time before saving dirty state to disk | `30` (30 seconds) |
+| `FAS_SHARED_SECRET` | If set, all requests (except `/_auth`) must include `X-Shared-Secret: <value>` — use this to prevent direct pod-to-pod access in Kubernetes; set the header in Traefik/nginx and FAS will reject requests without it | *(unset — no check)* |
 
 ---
 

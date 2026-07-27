@@ -117,6 +117,19 @@ pub fn admin_table_rows(locale: Locale, users: &[User], available_rules: &[Strin
 
             let mut options_html = String::new();
             let mut rule_found = false;
+            let placeholder_label = if locale == Locale::Zh { "-- 选择规则 --" } else { "-- Select Rule --" };
+            if u.acl_rule.is_empty() {
+                options_html.push_str(&format!(
+                    r#"<option value="" selected>{}</option>"#,
+                    placeholder_label
+                ));
+            } else {
+                options_html.push_str(&format!(
+                    r#"<option value="" disabled>{}</option>"#,
+                    placeholder_label
+                ));
+            }
+
             for r in available_rules {
                 let selected = if r == &u.acl_rule {
                     rule_found = true;
@@ -146,11 +159,11 @@ pub fn admin_table_rows(locale: Locale, users: &[User], available_rules: &[Strin
 
             let last_seen_str = u.last_seen.format("%Y-%m-%d %H:%M:%S").to_string();
             let relative_seen = format_relative_time(locale, u.last_seen);
-            let last_seen_display = format!("{} ({})", last_seen_str, relative_seen);
+            let last_seen_display = format!(r#"<span title="{}">{}</span>"#, last_seen_str, relative_seen);
 
             let created_at_str = u.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
             let relative_created = format_relative_time(locale, u.created_at);
-            let created_at_display = format!("{} ({})", created_at_str, relative_created);
+            let created_at_display = format!(r#"<span title="{}">{}</span>"#, created_at_str, relative_created);
 
             let expire_str = u.expire_at.format("%Y-%m-%d %H:%M:%S").to_string();
             let relative_expire = format_expire_time(locale, u.expire_at);
@@ -222,74 +235,74 @@ pub fn admin_page(
 <style>
   * {{ box-sizing: border-box; margin: 0; padding: 0; }}
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }}
-  .container {{ padding: 2rem; }}
-  h1 {{ font-size: 1.75rem; margin-bottom: 1rem; }}
+  .container {{ padding: 0.75rem 1.25rem; }}
+  h1 {{ font-size: 1.25rem; margin-bottom: 0.5rem; font-weight: 600; }}
   
   /* Tabs */
-  .nav-tabs {{ display: flex; gap: 0.5rem; margin-bottom: 1.5rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }}
-  .nav-tab {{ background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 0.5rem 1.25rem; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 0.9rem; font-weight: 500; transition: all 0.15s; }}
+  .nav-tabs {{ display: flex; gap: 0.35rem; margin-bottom: 0.75rem; border-bottom: 1px solid #334155; padding-bottom: 0.25rem; }}
+  .nav-tab {{ background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 0.3rem 0.85rem; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 0.8rem; font-weight: 500; transition: all 0.15s; }}
   .nav-tab:hover {{ background: #334155; color: #e2e8f0; }}
   .nav-tab.active {{ background: #3b82f6; color: #fff; border-color: #3b82f6; }}
   
-  .stats-bar {{ display: flex; gap: 1.5rem; margin-bottom: 1.5rem; flex-wrap: wrap; }}
-  .stat-chip {{ background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 0.5rem 1rem; font-size: 0.85rem; }}
+  .stats-bar {{ display: flex; gap: 0.75rem; margin-bottom: 0.6rem; flex-wrap: wrap; align-items: center; }}
+  .stat-chip {{ background: #1e293b; border: 1px solid #334155; border-radius: 6px; padding: 0.25rem 0.6rem; font-size: 0.78rem; }}
   .stat-chip strong {{ color: #38bdf8; }}
-  table {{ width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 12px; overflow: hidden; }}
-  th, td {{ padding: 0.6rem 0.75rem; text-align: left; border-bottom: 1px solid #334155; }}
-  th {{ background: #0f172a; font-weight: 600; color: #94a3b8; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }}
+  table {{ width: 100%; border-collapse: collapse; background: #1e293b; border-radius: 8px; overflow: hidden; }}
+  th, td {{ padding: 0.3rem 0.5rem; text-align: left; border-bottom: 1px solid #334155; font-size: 0.75rem; }}
+  th {{ background: #0f172a; font-weight: 600; color: #94a3b8; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.03em; padding: 0.35rem 0.5rem; }}
   tr:hover td {{ background: #1e293b; }}
-  .badge {{ display: inline-block; padding: 0.2rem 0.6rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }}
+  .badge {{ display: inline-block; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.72rem; font-weight: 600; }}
   .badge-yes {{ background: #22c55e20; color: #22c55e; border: 1px solid #22c55e40; }}
   .badge-no {{ background: #ef444420; color: #ef4444; border: 1px solid #ef444440; }}
   .badge.clickable {{ cursor: pointer; transition: transform 0.1s, opacity 0.1s; user-select: none; }}
   .badge.clickable:hover {{ transform: scale(1.05); opacity: 0.9; }}
-  .btn {{ display: inline-block; padding: 0.3rem 0.6rem; border: none; border-radius: 6px; font-size: 0.75rem; cursor: pointer; font-weight: 500; transition: opacity 0.15s; }}
+  .btn {{ display: inline-block; padding: 0.2rem 0.5rem; border: none; border-radius: 4px; font-size: 0.72rem; cursor: pointer; font-weight: 500; transition: opacity 0.15s; }}
   .btn:hover {{ opacity: 0.8; }}
   .btn-green {{ background: #22c55e; color: #fff; }}
   .btn-red {{ background: #ef4444; color: #fff; }}
   .btn-gray {{ background: #475569; color: #fff; }}
-  .mono {{ font-family: monospace; font-size: 0.78rem; }}
-  .actions {{ display: flex; gap: 0.3rem; }}
-  .empty {{ text-align: center; padding: 3rem 1rem; color: #64748b; }}
-  .toast {{ position: fixed; top: 1rem; right: 1rem; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 0.75rem 1.25rem; color: #e2e8f0; font-size: 0.9rem; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: none; z-index: 100; }}
-  .ua-cell {{ max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  .mono {{ font-family: monospace; font-size: 0.75rem; }}
+  .actions {{ display: flex; gap: 0.25rem; }}
+  .empty {{ text-align: center; padding: 2rem 1rem; color: #64748b; }}
+  .toast {{ position: fixed; top: 1rem; right: 1rem; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 0.5rem 1rem; color: #e2e8f0; font-size: 0.82rem; box-shadow: 0 4px 12px rgba(0,0,0,0.3); display: none; z-index: 100; }}
+  .ua-cell {{ max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
   .remark-container {{ position: relative; display: inline-block; }}
-  .remark-input {{ background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.25rem 0.5rem; color: #e2e8f0; font-size: 0.78rem; width: 140px; transition: border-color 0.15s; }}
+  .remark-input {{ background: #0f172a; border: 1px solid #334155; border-radius: 4px; padding: 0.15rem 0.4rem; color: #e2e8f0; font-size: 0.75rem; width: 120px; transition: border-color 0.15s; }}
   .remark-input:focus {{ outline: none; border-color: #3b82f6; }}
   .remark-dropdown {{ position: absolute; background: #1e293b; border: 1px solid #334155; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); z-index: 9999; display: none; max-height: 180px; overflow-y: auto; }}
-  .dropdown-item {{ padding: 0.4rem 0.6rem; color: #e2e8f0; font-size: 0.78rem; cursor: pointer; transition: background 0.1s, color 0.1s; text-align: left; }}
+  .dropdown-item {{ padding: 0.3rem 0.5rem; color: #e2e8f0; font-size: 0.75rem; cursor: pointer; transition: background 0.1s, color 0.1s; text-align: left; }}
   .dropdown-item:hover {{ background: #0f172a; color: #38bdf8; }}
   @media (max-width: 768px) {{
-    .container {{ padding: 1rem 0.5rem; }}
-    th, td {{ padding: 0.4rem 0.35rem; font-size: 0.75rem; }}
+    .container {{ padding: 0.5rem 0.35rem; }}
+    th, td {{ padding: 0.25rem 0.3rem; font-size: 0.72rem; }}
     .ua-cell {{ max-width: 80px; }}
   }}
   .sortable {{ cursor: pointer; position: relative; user-select: none; }}
   .sortable:hover {{ background: #1e293b !important; color: #3b82f6; }}
-  .sort-icon {{ font-size: 0.75rem; color: #3b82f6; }}
-  .filter-bar {{ background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.25rem; margin-bottom: 1.5rem; }}
-  .filter-group {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.75rem; align-items: center; }}
-  .filter-input {{ background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.4rem 0.75rem; color: #e2e8f0; font-size: 0.8rem; outline: none; transition: border-color 0.15s; width: 100%; }}
+  .sort-icon {{ font-size: 0.72rem; color: #3b82f6; }}
+  .filter-bar {{ background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 0.5rem 0.75rem; margin-bottom: 0.6rem; }}
+  .filter-group {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 0.4rem; align-items: center; }}
+  .filter-input {{ background: #0f172a; border: 1px solid #334155; border-radius: 4px; padding: 0.25rem 0.5rem; color: #e2e8f0; font-size: 0.75rem; outline: none; transition: border-color 0.15s; width: 100%; }}
   .filter-input:focus {{ border-color: #3b82f6; }}
-  .batch-bar {{ display: none; align-items: center; justify-content: space-between; background: #1e293b; border: 1px solid #3b82f6; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1rem; }}
+  .batch-bar {{ display: none; align-items: center; justify-content: space-between; background: #1e293b; border: 1px solid #3b82f6; border-radius: 6px; padding: 0.4rem 0.75rem; margin-bottom: 0.5rem; font-size: 0.78rem; }}
   .batch-bar.show {{ display: flex; }}
-  .batch-info {{ font-size: 0.85rem; color: #e2e8f0; }}
+  .batch-info {{ font-size: 0.78rem; color: #e2e8f0; }}
   .batch-info strong {{ color: #3b82f6; }}
-  .batch-actions {{ display: flex; gap: 0.5rem; }}
-  .pagination-bar {{ display: flex; align-items: center; justify-content: space-between; margin-top: 1rem; flex-wrap: wrap; gap: 1rem; }}
-  .pagination-info {{ font-size: 0.82rem; color: #94a3b8; }}
-  .pagination-controls {{ display: flex; gap: 0.25rem; }}
-  .page-btn {{ background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 0.35rem 0.75rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; transition: all 0.15s; }}
+  .batch-actions {{ display: flex; gap: 0.35rem; }}
+  .pagination-bar {{ display: flex; align-items: center; justify-content: space-between; margin-top: 0.5rem; flex-wrap: wrap; gap: 0.5rem; }}
+  .pagination-info {{ font-size: 0.78rem; color: #94a3b8; }}
+  .pagination-controls {{ display: flex; gap: 0.2rem; }}
+  .page-btn {{ background: #1e293b; border: 1px solid #334155; color: #94a3b8; padding: 0.2rem 0.5rem; border-radius: 4px; cursor: pointer; font-size: 0.75rem; transition: all 0.15s; }}
   .page-btn:hover:not(.disabled) {{ background: #334155; color: #e2e8f0; border-color: #475569; }}
   .page-btn.active {{ background: #3b82f6; color: #fff; border-color: #3b82f6; }}
   .page-btn.disabled {{ opacity: 0.4; cursor: not-allowed; }}
   
   /* Config Tab Editor Styles */
-  .config-container {{ background: #1e293b; border: 1px solid #334155; border-radius: 12px; padding: 1.5rem; }}
-  .config-toolbar {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; gap: 0.75rem; }}
-  .yaml-editor {{ width: 100%; height: 480px; background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 1rem; color: #38bdf8; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.88rem; line-height: 1.5; outline: none; resize: vertical; }}
+  .config-container {{ background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1rem; }}
+  .config-toolbar {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; flex-wrap: wrap; gap: 0.5rem; }}
+  .yaml-editor {{ width: 100%; height: 480px; background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.75rem; color: #38bdf8; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.82rem; line-height: 1.4; outline: none; resize: vertical; }}
   .yaml-editor:focus {{ border-color: #3b82f6; }}
-  .error-box {{ background: #ef444420; border: 1px solid #ef444480; color: #f87171; border-radius: 8px; padding: 0.75rem 1rem; margin-top: 1rem; font-family: monospace; font-size: 0.82rem; white-space: pre-wrap; }}
+  .error-box {{ background: #ef444420; border: 1px solid #ef444480; color: #f87171; border-radius: 6px; padding: 0.5rem 0.75rem; margin-top: 0.75rem; font-family: monospace; font-size: 0.78rem; white-space: pre-wrap; }}
 </style>
 </head>
 <body>
@@ -393,6 +406,7 @@ pub fn admin_page(
   </div>
 </div>
 
+<footer style="margin-top: 2rem; font-size: 0.75rem; color: #475569; text-align: center;">FAS v{fas_version}</footer>
 </div>
 <script>
 const i18n = {{
@@ -793,6 +807,14 @@ function renderTablePage() {{
     
     let optionsHtml = '';
     let ruleFound = false;
+    const isZh = document.documentElement.lang === 'zh';
+    const placeholderText = isZh ? '-- 选择规则 --' : '-- Select Rule --';
+    if (!u.acl_rule) {{
+      optionsHtml += '<option value="" selected>' + escapeHtml(placeholderText) + '</option>';
+    }} else {{
+      optionsHtml += '<option value="" disabled>' + escapeHtml(placeholderText) + '</option>';
+    }}
+
     for (const r of availableRules) {{
       const isSel = (r === u.acl_rule);
       if (isSel) ruleFound = true;
@@ -806,11 +828,11 @@ function renderTablePage() {{
       
     const lastSeenStr = formatDateTime(u.last_seen);
     const relativeSeen = formatRelativeTime(u.last_seen);
-    const lastSeenDisplay = lastSeenStr + ' (' + relativeSeen + ')';
+    const lastSeenDisplay = '<span title="' + escapeHtml(lastSeenStr) + '">' + escapeHtml(relativeSeen) + '</span>';
     
     const createdAtStr = formatDateTime(u.created_at);
     const relativeCreated = formatRelativeTime(u.created_at);
-    const createdAtDisplay = createdAtStr + ' (' + relativeCreated + ')';
+    const createdAtDisplay = '<span title="' + escapeHtml(createdAtStr) + '">' + escapeHtml(relativeCreated) + '</span>';
     
     const expireStr = formatDateTime(u.expire_at);
     const relativeExpire = formatExpireTime(u.expire_at);
@@ -826,10 +848,10 @@ function renderTablePage() {{
       '<td><input type="checkbox" class="user-checkbox" data-sid="' + escapeHtml(shortSid) + '" ' + (isSelected ? 'checked' : '') + ' onchange="toggleSelectSid(\'' + escapeHtml(shortSid) + '\', this.checked)"></td>' +
       '<td class="mono">' + escapeHtml(shortSid) + '</td>' +
       '<td>' + escapeHtml(displayDomain) + '</td>' +
-      '<td class="mono">' + escapeHtml(createdAtDisplay) + '</td>' +
+      '<td class="mono">' + createdAtDisplay + '</td>' +
       '<td>' + ruleSelect + '</td>' +
       '<td class="mono">' + escapeHtml(ip) + '</td>' +
-      '<td class="mono">' + escapeHtml(lastSeenDisplay) + '</td>' +
+      '<td class="mono">' + lastSeenDisplay + '</td>' +
       '<td class="mono">' + expireDisplay + '</td>' +
       '<td class="ua-cell" title="' + escapeHtml(u.user_agent) + '">' + escapeHtml(uaShort) + '</td>' +
       '<td class="mono">' + u.request_count + '</td>' +
@@ -1273,6 +1295,7 @@ setInterval(() => {{
         btn_delete_json = serde_json::to_string(s.btn_delete).unwrap(),
         btn_extend_json = serde_json::to_string(s.btn_extend).unwrap(),
         acl_rules_json = serde_json::to_string(acl_rules).unwrap(),
+        fas_version = env!("CARGO_PKG_VERSION"),
     )
 }
 
@@ -1306,7 +1329,7 @@ pub fn visitor_page(locale: Locale, title: &str, body: &str) -> String {
 <body>
 <div class="card">
 {body}
-<footer>FAS v1</footer>
+<footer>FAS v{fas_version}</footer>
 </div>
 <script>
 function copyId() {{
@@ -1323,9 +1346,9 @@ function copyId() {{
   }});
 }}
 (function() {{
-  const isZh = document.documentElement.lang === 'zh-CN';
-  const msgCheckingIn = isZh ? '将在 {{{{seconds}}}} 秒后自动检查...' : 'Checking in {{{{seconds}}}}s...';
-  const msgChecking = isZh ? '正在检查...' : 'Checking...';
+  const isZh = document.documentElement.lang === 'zh';
+  const msgCheckingIn = isZh ? '正在自动检测权限... ({{{{seconds}}}}s)' : 'Checking status... ({{{{seconds}}}}s)';
+  const msgChecking = isZh ? '正在验证...' : 'Verifying...';
   const msgAuthenticated = isZh ? '认证成功！正在刷新...' : 'Authenticated! Refreshing...';
   
   const statusEl = document.getElementById('checkStatus');
@@ -1378,7 +1401,8 @@ function copyId() {{
         lang_attr = lang_attr,
         title = title,
         body = body,
-        copy_btn_done = s.copied
+        copy_btn_done = s.copied,
+        fas_version = env!("CARGO_PKG_VERSION"),
     )
 }
 

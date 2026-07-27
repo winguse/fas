@@ -84,6 +84,44 @@ fn make_set_cookie(sid: &str, cookie_domain: Option<&str>, max_age: i64) -> Stri
     }
 }
 
+/// Axum 0.6 Middleware to check X-Shared-Secret header for all endpoints except `/_auth`
+pub async fn shared_secret_middleware<B>(
+    shared_secret: Option<String>,
+    req: axum::http::Request<B>,
+    next: axum::middleware::Next<B>,
+) -> Response
+where
+    B: Send + 'static,
+{
+    // Always allow /_auth through (visitor auth endpoint)
+    if req.uri().path() == "/_auth" {
+        return next.run(req).await;
+    }
+
+    if let Some(expected_token) = &shared_secret {
+        let header_token = req
+            .headers()
+            .get("x-shared-secret")
+            .and_then(|v| v.to_str().ok());
+
+        if header_token != Some(expected_token.as_str()) {
+            use axum::body::{boxed, Full};
+            let body = serde_json::json!({
+                "ok": false,
+                "error": "Unauthorized: missing or invalid X-Shared-Secret header"
+            })
+            .to_string();
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(boxed(Full::from(body)))
+                .unwrap();
+        }
+    }
+
+    next.run(req).await
+}
+
 fn compute_user_expire_at(
     compiled_acl: &crate::acl::CompiledAclConfig,
     rule_name: &str,

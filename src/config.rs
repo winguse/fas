@@ -12,6 +12,7 @@ pub struct Config {
     pub purge_interval: Duration,
     pub rate_limit_window: Duration,
     pub save_interval: Duration,
+    pub shared_secret: Option<String>,
 }
 
 impl Config {
@@ -54,6 +55,11 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(30); // 30 seconds
 
+        let shared_secret = env::var("FAS_SHARED_SECRET")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         Self {
             data_file,
             acl_file,
@@ -63,6 +69,7 @@ impl Config {
             purge_interval: Duration::from_secs(purge_interval_secs),
             rate_limit_window: Duration::from_secs(rate_limit_window_secs),
             save_interval: Duration::from_secs(save_interval_secs),
+            shared_secret,
         }
     }
 }
@@ -88,6 +95,7 @@ mod tests {
         env::remove_var("FAS_PURGE_INTERVAL_SECS");
         env::remove_var("FAS_RATE_LIMIT_WINDOW_SECS");
         env::remove_var("FAS_SAVE_INTERVAL_SECS");
+        env::remove_var("FAS_SHARED_SECRET");
 
         let config_def = Config::from_env();
         assert_eq!(config_def.data_file, PathBuf::from("/data/fas.jsonl"));
@@ -98,6 +106,7 @@ mod tests {
         assert_eq!(config_def.purge_interval, Duration::from_secs(3600));
         assert_eq!(config_def.rate_limit_window, Duration::from_secs(5));
         assert_eq!(config_def.save_interval, Duration::from_secs(30));
+        assert_eq!(config_def.shared_secret, None);
 
         // 2. Custom values test
         env::set_var("FAS_DATA_FILE", "/custom/data.jsonl");
@@ -108,6 +117,7 @@ mod tests {
         env::set_var("FAS_PURGE_INTERVAL_SECS", "600");
         env::set_var("FAS_RATE_LIMIT_WINDOW_SECS", "10");
         env::set_var("FAS_SAVE_INTERVAL_SECS", "15");
+        env::set_var("FAS_SHARED_SECRET", "secret_token_123");
 
         let config_custom = Config::from_env();
         assert_eq!(config_custom.data_file, PathBuf::from("/custom/data.jsonl"));
@@ -118,6 +128,10 @@ mod tests {
         assert_eq!(config_custom.purge_interval, Duration::from_secs(600));
         assert_eq!(config_custom.rate_limit_window, Duration::from_secs(10));
         assert_eq!(config_custom.save_interval, Duration::from_secs(15));
+        assert_eq!(
+            config_custom.shared_secret,
+            Some("secret_token_123".to_string())
+        );
 
         // Clean up env vars
         env::remove_var("FAS_DATA_FILE");
@@ -128,5 +142,6 @@ mod tests {
         env::remove_var("FAS_PURGE_INTERVAL_SECS");
         env::remove_var("FAS_RATE_LIMIT_WINDOW_SECS");
         env::remove_var("FAS_SAVE_INTERVAL_SECS");
+        env::remove_var("FAS_SHARED_SECRET");
     }
 }
