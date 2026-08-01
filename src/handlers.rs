@@ -84,7 +84,22 @@ fn make_set_cookie(sid: &str, cookie_domain: Option<&str>, max_age: i64) -> Stri
     }
 }
 
-/// Axum 0.6 Middleware to check X-Shared-Secret header for all endpoints except `/_auth`
+/// Helper: Format incoming HTTP headers to a JSON Value for structured logging
+pub fn format_headers(headers: &HeaderMap) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (k, v) in headers.iter() {
+        let key = k.as_str().to_string();
+        let val_str = if key.eq_ignore_ascii_case("x-shared-secret") {
+            "***".to_string()
+        } else {
+            v.to_str().unwrap_or("<binary>").to_string()
+        };
+        map.insert(key, serde_json::Value::String(val_str));
+    }
+    serde_json::Value::Object(map)
+}
+
+/// Axum 0.6 Middleware to check X-Shared-Secret header for all endpoints except `/_auth` (including `/_auth/*`) and health probes
 pub async fn shared_secret_middleware<B>(
     shared_secret: Option<String>,
     req: axum::http::Request<B>,
@@ -93,8 +108,19 @@ pub async fn shared_secret_middleware<B>(
 where
     B: Send + 'static,
 {
-    // Always allow /_auth through (visitor auth endpoint)
-    if req.uri().path() == "/_auth" {
+    let path = req.uri().path();
+    // Always allow /_auth (and /_auth/*) and health/liveness/readiness endpoints through
+    if path.starts_with("/_auth")
+        || path == "/_health"
+        || path == "/healthz"
+        || path == "/health"
+        || path == "/livez"
+        || path == "/_livez"
+        || path == "/live"
+        || path == "/readyz"
+        || path == "/_readyz"
+        || path == "/ready"
+    {
         return next.run(req).await;
     }
 
@@ -138,17 +164,29 @@ fn compute_user_expire_at(
     Utc::now() + duration
 }
 
-/// GET /_health
+/// GET /_health, /healthz, /health
 pub async fn health_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
 }
 
-/// GET /_auth
+/// GET /livez, /_livez, /live
+pub async fn liveness_check() -> impl IntoResponse {
+    (StatusCode::OK, "OK")
+}
+
+/// GET /readyz, /_readyz, /ready
+pub async fn readiness_check() -> impl IntoResponse {
+    (StatusCode::OK, "OK")
+}
+
+/// GET /_auth and GET /_auth/*
 pub async fn auth_handler(
     State(state): State<AppState>,
+    uri: axum::http::Uri,
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
 ) -> impl IntoResponse {
+    let req_path = uri.path().to_string();
     let locale = get_locale(&headers);
     let sid = extract_sid(&headers);
     let client_ip = real_client_ip(&headers);
@@ -181,13 +219,29 @@ pub async fn auth_handler(
         .unwrap_or("GET")
         .to_string();
 
-    let path = headers
-        .get("X-Forwarded-Uri")
-        .or_else(|| headers.get("X-Original-URI"))
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("/")
-        .to_string();
+    // Envoy appends original path to /_auth (e.g. /_auth/abc).
+    // Extract path from URL suffix after /_auth if present, otherwise fallback to X-Forwarded-Uri / X-Original-URI headers.
+    let path = if let Some(suffix) = req_path.strip_prefix("/_auth") {
+        if !suffix.is_empty() && suffix != "/" {
+            suffix.to_string()
+        } else {
+            headers
+                .get("X-Forwarded-Uri")
+                .or_else(|| headers.get("X-Original-URI"))
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("/")
+                .to_string()
+        }
+    } else {
+        headers
+            .get("X-Forwarded-Uri")
+            .or_else(|| headers.get("X-Original-URI"))
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("/")
+            .to_string()
+    };
 
+    let hdrs_json = format_headers(&headers);
     let s = crate::i18n::t(locale);
 
     // Increment dedicated total requests counter
@@ -228,6 +282,32 @@ pub async fn auth_handler(
             let set_cookie_hdr =
                 make_set_cookie(&user.sid, cookie_domain_opt.as_deref(), remaining_ttl);
 
+            tracing::info!(
+                client_ip = %client_ip,
+                domain = %domain,
+                method = %method,
+                path = %path,
+                raw_uri = %req_path,
+                sid = %user.sid,
+                result = "ALLOW",
+                rule_name = %user.acl_rule,
+                status = 200,
+                user_agent = %user_agent,
+                headers = %hdrs_json,
+                "Auth decision: ALLOW"
+            );
+
+            if tracing::enabled!(tracing::Level::DEBUG) {
+                tracing::debug!(
+                    sid = %user.sid,
+                    rule_name = %user.acl_rule,
+                    cookie_domain = ?cookie_domain_opt,
+                    set_cookie = %set_cookie_hdr,
+                    expire_at = %user.expire_at,
+                    "Auth debug details for ALLOW"
+                );
+            }
+
             return Response::builder()
                 .status(StatusCode::OK)
                 .header(header::SET_COOKIE, set_cookie_hdr)
@@ -241,6 +321,20 @@ pub async fn auth_handler(
             .check_rate_limit(&client_ip, state.config.rate_limit_window)
             .await
         {
+            tracing::info!(
+                client_ip = %client_ip,
+                domain = %domain,
+                method = %method,
+                path = %path,
+                raw_uri = %req_path,
+                sid = %user.sid,
+                result = "RATE_LIMITED",
+                rule_name = %user.acl_rule,
+                status = 429,
+                user_agent = %user_agent,
+                headers = %hdrs_json,
+                "Auth decision: RATE_LIMITED"
+            );
             let html = crate::templates::rate_limit_page(locale, retry_after, &client_ip);
             return Response::builder()
                 .status(StatusCode::TOO_MANY_REQUESTS)
@@ -251,6 +345,20 @@ pub async fn auth_handler(
         }
 
         // Show pending/denied visitor page
+        tracing::info!(
+            client_ip = %client_ip,
+            domain = %domain,
+            method = %method,
+            path = %path,
+            raw_uri = %req_path,
+            sid = %user.sid,
+            result = "DENY",
+            rule_name = %user.acl_rule,
+            status = 401,
+            user_agent = %user_agent,
+            headers = %hdrs_json,
+            "Auth decision: DENY"
+        );
         let short_sid = if user.sid.len() >= 6 {
             &user.sid[0..6]
         } else {
@@ -284,6 +392,18 @@ pub async fn auth_handler(
         .check_rate_limit(&client_ip, state.config.rate_limit_window)
         .await
     {
+        tracing::info!(
+            client_ip = %client_ip,
+            domain = %domain,
+            method = %method,
+            path = %path,
+            raw_uri = %req_path,
+            result = "RATE_LIMITED",
+            status = 429,
+            user_agent = %user_agent,
+            headers = %hdrs_json,
+            "Auth decision: RATE_LIMITED (no sid)"
+        );
         let html = crate::templates::rate_limit_page(locale, retry_after, &client_ip);
         return Response::builder()
             .status(StatusCode::TOO_MANY_REQUESTS)
@@ -321,7 +441,19 @@ pub async fn auth_handler(
         cdom
     };
     state.store.mark_dirty(state.config.save_interval).await;
-    tracing::info!("New visitor: {} on {} from {}", new_sid, domain, client_ip);
+    tracing::info!(
+        client_ip = %client_ip,
+        domain = %domain,
+        method = %method,
+        path = %path,
+        raw_uri = %req_path,
+        sid = %new_sid,
+        result = "NEW_VISITOR",
+        status = 401,
+        user_agent = %user_agent,
+        headers = %hdrs_json,
+        "New visitor created: {} on {} from {}", new_sid, domain, client_ip
+    );
 
     let short_new_sid = if new_sid.len() >= 6 {
         &new_sid[0..6]
@@ -735,7 +867,8 @@ mod tests {
         headers.insert("X-Real-Ip", HeaderValue::from_static("10.0.0.1"));
         let query = AuthQuery { domain: None };
 
-        let resp = auth_handler(State(state.clone()), headers, Query(query))
+        let uri = axum::http::Uri::from_static("/_auth");
+        let resp = auth_handler(State(state.clone()), uri.clone(), headers, Query(query))
             .await
             .into_response();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -763,7 +896,7 @@ mod tests {
         );
         let query2 = AuthQuery { domain: None };
 
-        let resp2 = auth_handler(State(state.clone()), headers2, Query(query2))
+        let resp2 = auth_handler(State(state.clone()), uri.clone(), headers2, Query(query2))
             .await
             .into_response();
         assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
@@ -790,7 +923,7 @@ mod tests {
         );
         let query3 = AuthQuery { domain: None };
 
-        let resp3 = auth_handler(State(state.clone()), headers3, Query(query3))
+        let resp3 = auth_handler(State(state.clone()), uri.clone(), headers3, Query(query3))
             .await
             .into_response();
         assert_eq!(resp3.status(), StatusCode::OK);
@@ -801,6 +934,91 @@ mod tests {
         if temp_acl.exists() {
             let _ = std::fs::remove_file(temp_acl);
         }
+    }
+
+    #[tokio::test]
+    async fn test_envoy_path_suffix_auth() {
+        let temp_dir = std::env::temp_dir();
+        let temp_data = temp_dir.join(format!("test_envoy_{}.jsonl", uuid::Uuid::new_v4()));
+        let temp_acl = temp_dir.join(format!("test_envoy_{}.yaml", uuid::Uuid::new_v4()));
+        let store = Store::new(temp_data.clone(), temp_acl.clone());
+        let config = Config::from_env();
+        let state = AppState {
+            store: store.clone(),
+            config: config.clone(),
+        };
+
+        // Populate custom ACL rule that allows GET /abc on example.com
+        let acl_yaml = r#"
+acl_rules:
+  allow_abc:
+    allow:
+      - method: "^GET$"
+        domain: "^example\\.com$"
+        path: "^/abc$"
+"#;
+        std::fs::write(&temp_acl, acl_yaml).unwrap();
+        store.load_acl().await.unwrap();
+
+        let sid = "envoy-test-sid-12345";
+        let now = Utc::now();
+        let user = crate::store::User {
+            sid: sid.to_string(),
+            last_seen_domain: "example.com".to_string(),
+            acl_rule: "allow_abc".to_string(),
+            created_at: now,
+            updated_at: now,
+            expire_at: now + chrono::Duration::hours(1),
+            last_ip: "127.0.0.1".to_string(),
+            last_seen: now,
+            user_agent: "EnvoyTest".to_string(),
+            request_count: 1,
+            remark: "".to_string(),
+        };
+        {
+            let mut inner = store.inner.write().await;
+            inner.users.insert(sid.to_string(), user);
+        }
+
+        // Test Envoy path suffix: Envoy calls /_auth/abc when visitor requests /abc
+        let envoy_uri = axum::http::Uri::from_static("/_auth/abc");
+        let mut headers = HeaderMap::new();
+        headers.insert("Host", HeaderValue::from_static("example.com"));
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("fas_sid={}", sid)).unwrap(),
+        );
+
+        let resp = auth_handler(
+            State(state.clone()),
+            envoy_uri,
+            headers,
+            Query(AuthQuery { domain: None }),
+        )
+        .await
+        .into_response();
+
+        // Should return 200 OK because suffix /abc matches ^/abc$ in allow_abc rule
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        if temp_data.exists() {
+            let _ = std::fs::remove_file(temp_data);
+        }
+        if temp_acl.exists() {
+            let _ = std::fs::remove_file(temp_acl);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_health_and_probe_handlers() {
+        let health_res = health_check().await.into_response();
+        assert_eq!(health_res.status(), StatusCode::OK);
+
+        let live_res = liveness_check().await.into_response();
+        assert_eq!(live_res.status(), StatusCode::OK);
+
+        let ready_res = readiness_check().await.into_response();
+        assert_eq!(ready_res.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -923,5 +1141,74 @@ mod tests {
         if temp_acl.exists() {
             let _ = std::fs::remove_file(temp_acl);
         }
+    }
+
+    #[test]
+    fn test_format_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("User-Agent", HeaderValue::from_static("TestAgent"));
+        headers.insert("X-Shared-Secret", HeaderValue::from_static("supersecret"));
+        let json_val = format_headers(&headers);
+        assert_eq!(json_val["user-agent"], "TestAgent");
+        assert_eq!(json_val["x-shared-secret"], "***");
+    }
+
+    #[tokio::test]
+    async fn test_shared_secret_middleware_bypasses() {
+        use axum::{routing::get, Router};
+        use tower::ServiceExt;
+
+        let shared_secret = Some("my-secret-key".to_string());
+        let sec = shared_secret.clone();
+        let app = Router::new()
+            .route("/_health", get(health_check))
+            .route("/healthz", get(health_check))
+            .route("/livez", get(liveness_check))
+            .route("/readyz", get(readiness_check))
+            .route("/_auth", get(health_check))
+            .route("/_auth/*path", get(health_check))
+            .route("/api/stats", get(health_check))
+            .layer(axum::middleware::from_fn(move |req, next| {
+                shared_secret_middleware(sec.clone(), req, next)
+            }));
+
+        // Probe endpoints should bypass shared secret requirement without header
+        for path in &[
+            "/_health",
+            "/healthz",
+            "/livez",
+            "/readyz",
+            "/_auth",
+            "/_auth/abc",
+        ] {
+            let req = axum::http::Request::builder()
+                .uri(*path)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::OK,
+                "Path {} should bypass shared_secret requirement",
+                path
+            );
+        }
+
+        // Protected endpoint without header -> 401 Unauthorized
+        let req_no_hdr = axum::http::Request::builder()
+            .uri("/api/stats")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res_no_hdr = app.clone().oneshot(req_no_hdr).await.unwrap();
+        assert_eq!(res_no_hdr.status(), StatusCode::UNAUTHORIZED);
+
+        // Protected endpoint with valid header -> 200 OK
+        let req_with_hdr = axum::http::Request::builder()
+            .uri("/api/stats")
+            .header("x-shared-secret", "my-secret-key")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res_with_hdr = app.oneshot(req_with_hdr).await.unwrap();
+        assert_eq!(res_with_hdr.status(), StatusCode::OK);
     }
 }

@@ -17,19 +17,35 @@ use crate::config::Config;
 use crate::handlers::AppState;
 use crate::store::Store;
 
+fn init_tracing(config: &Config) {
+    let default_filter = format!("fas={},tower_http={}", config.log_level, config.log_level);
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| default_filter.into());
+
+    let use_json = config.log_format.eq_ignore_ascii_case("json");
+
+    if use_json {
+        let json_layer = tracing_subscriber::fmt::layer().json().flatten_event(true);
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(json_layer)
+            .init();
+    } else {
+        let fmt_layer = tracing_subscriber::fmt::layer();
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    // 1. Initialize tracing/logging
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "fas=info,tower_http=info".into()),
-        )
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
-    // 2. Load Configuration
+    // 1. Load Configuration
     let config = Config::from_env();
+
+    // 2. Initialize tracing/logging
+    init_tracing(&config);
     tracing::info!("Loaded config: {:?}", config);
 
     // 3. Initialize and Load Data Store & ACL Config
@@ -122,8 +138,19 @@ async fn main() {
     // Build optional token-check middleware closure
     let shared_secret = config.shared_secret.clone();
     let app = Router::new()
+        // K8s / K9s Health, Liveness, and Readiness routes
         .route("/_health", get(handlers::health_check))
+        .route("/healthz", get(handlers::health_check))
+        .route("/health", get(handlers::health_check))
+        .route("/livez", get(handlers::liveness_check))
+        .route("/_livez", get(handlers::liveness_check))
+        .route("/live", get(handlers::liveness_check))
+        .route("/readyz", get(handlers::readiness_check))
+        .route("/_readyz", get(handlers::readiness_check))
+        .route("/ready", get(handlers::readiness_check))
+        // Auth endpoints (Standard /_auth and Envoy /_auth/* path suffix)
         .route("/_auth", get(handlers::auth_handler))
+        .route("/_auth/*path", get(handlers::auth_handler))
         .route("/", get(handlers::admin_page_handler))
         .route("/api/stats", get(handlers::stats_handler))
         .route("/api/stats/reset", post(handlers::reset_stats_handler))

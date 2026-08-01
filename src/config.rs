@@ -13,6 +13,8 @@ pub struct Config {
     pub rate_limit_window: Duration,
     pub save_interval: Duration,
     pub shared_secret: Option<String>,
+    pub log_level: String,
+    pub log_format: String,
 }
 
 impl Config {
@@ -60,6 +62,23 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
 
+        let log_level = env::var("FAS_LOG_LEVEL")
+            .or_else(|_| env::var("LOG_LEVEL"))
+            .unwrap_or_else(|_| "info".to_string());
+
+        let log_format = env::var("FAS_LOG_FORMAT")
+            .or_else(|_| env::var("LOG_FORMAT"))
+            .or_else(|_| {
+                env::var("FAS_LOG_JSON").map(|v| {
+                    if v == "1" || v.eq_ignore_ascii_case("true") {
+                        "json".to_string()
+                    } else {
+                        "text".to_string()
+                    }
+                })
+            })
+            .unwrap_or_else(|_| "json".to_string());
+
         Self {
             data_file,
             acl_file,
@@ -70,6 +89,8 @@ impl Config {
             rate_limit_window: Duration::from_secs(rate_limit_window_secs),
             save_interval: Duration::from_secs(save_interval_secs),
             shared_secret,
+            log_level,
+            log_format,
         }
     }
 }
@@ -96,6 +117,11 @@ mod tests {
         env::remove_var("FAS_RATE_LIMIT_WINDOW_SECS");
         env::remove_var("FAS_SAVE_INTERVAL_SECS");
         env::remove_var("FAS_SHARED_SECRET");
+        env::remove_var("FAS_LOG_LEVEL");
+        env::remove_var("LOG_LEVEL");
+        env::remove_var("FAS_LOG_FORMAT");
+        env::remove_var("LOG_FORMAT");
+        env::remove_var("FAS_LOG_JSON");
 
         let config_def = Config::from_env();
         assert_eq!(config_def.data_file, PathBuf::from("/data/fas.jsonl"));
@@ -107,6 +133,8 @@ mod tests {
         assert_eq!(config_def.rate_limit_window, Duration::from_secs(5));
         assert_eq!(config_def.save_interval, Duration::from_secs(30));
         assert_eq!(config_def.shared_secret, None);
+        assert_eq!(config_def.log_level, "info");
+        assert_eq!(config_def.log_format, "json");
 
         // 2. Custom values test
         env::set_var("FAS_DATA_FILE", "/custom/data.jsonl");
@@ -118,6 +146,8 @@ mod tests {
         env::set_var("FAS_RATE_LIMIT_WINDOW_SECS", "10");
         env::set_var("FAS_SAVE_INTERVAL_SECS", "15");
         env::set_var("FAS_SHARED_SECRET", "secret_token_123");
+        env::set_var("FAS_LOG_LEVEL", "debug");
+        env::set_var("FAS_LOG_FORMAT", "text");
 
         let config_custom = Config::from_env();
         assert_eq!(config_custom.data_file, PathBuf::from("/custom/data.jsonl"));
@@ -132,6 +162,8 @@ mod tests {
             config_custom.shared_secret,
             Some("secret_token_123".to_string())
         );
+        assert_eq!(config_custom.log_level, "debug");
+        assert_eq!(config_custom.log_format, "text");
 
         // Clean up env vars
         env::remove_var("FAS_DATA_FILE");
@@ -143,5 +175,10 @@ mod tests {
         env::remove_var("FAS_RATE_LIMIT_WINDOW_SECS");
         env::remove_var("FAS_SAVE_INTERVAL_SECS");
         env::remove_var("FAS_SHARED_SECRET");
+        env::remove_var("FAS_LOG_LEVEL");
+        env::remove_var("LOG_LEVEL");
+        env::remove_var("FAS_LOG_FORMAT");
+        env::remove_var("LOG_FORMAT");
+        env::remove_var("FAS_LOG_JSON");
     }
 }

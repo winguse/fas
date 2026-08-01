@@ -49,7 +49,29 @@ The application is structured cleanly:
 | `FAS_PURGE_INTERVAL_SECS` | Interval at which database TTL purges run | `3600` (1 hour) |
 | `FAS_RATE_LIMIT_WINDOW_SECS`| Minimum interval between requests for unapproved visitors | `5` (5 seconds) |
 | `FAS_SAVE_INTERVAL_SECS` | Throttle time before saving dirty state to disk | `30` (30 seconds) |
-| `FAS_SHARED_SECRET` | If set, all requests (except `/_auth`) must include `X-Shared-Secret: <value>` — use this to prevent direct pod-to-pod access in Kubernetes; set the header in Traefik/nginx and FAS will reject requests without it | *(unset — no check)* |
+| `FAS_SHARED_SECRET` | If set, all requests (except `/_auth` and health probes) must include `X-Shared-Secret: <value>` — use this to prevent direct pod-to-pod access in Kubernetes; set the header in proxy and FAS will reject requests without it | *(unset — no check)* |
+| `FAS_LOG_LEVEL` / `LOG_LEVEL` | Logging level (`debug`, `info`, `warn`, `error`, `trace`) | `info` |
+| `FAS_LOG_FORMAT` / `LOG_FORMAT` / `FAS_LOG_JSON` | Log format (`json` or `text`) — structured JSON logging to stdout | `json` |
+
+---
+
+## Health, Readiness & Liveness Probes (Kubernetes / K9s)
+
+FAS provides probe endpoints for Kubernetes and K9s health monitoring:
+- **Liveness Probes**: `/livez`, `/_livez`, `/live`, `/healthz`, `/_health`, `/health`
+- **Readiness Probes**: `/readyz`, `/_readyz`, `/ready`
+
+These endpoints return `200 OK` with body `"OK"` and automatically bypass `FAS_SHARED_SECRET` enforcement.
+
+---
+
+## Proxy Integrations
+
+### Traefik / Nginx
+For Traefik and Nginx, ForwardAuth points to `http://fas:8080/_auth`. The original path is extracted from `X-Forwarded-Uri` or `X-Original-URI`.
+
+### Envoy (`ext_authz`)
+For Envoy HTTP `ext_authz`, Envoy appends the target path to the auth path (e.g., visiting `/abc` results in Envoy calling `/_auth/abc`). FAS extracts the target URL path from the suffix after `/_auth` (`/abc`) and evaluates it against ACL rules.
 
 ---
 
