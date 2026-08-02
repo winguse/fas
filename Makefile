@@ -20,3 +20,5 @@ clippy:
 clean:
 	cargo clean
 	rm -f fas.jsonl
+
+validate: fmt test check clippy

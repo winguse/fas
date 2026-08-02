@@ -1,5 +1,5 @@
 use axum::{
-    routing::{delete, get, post},
+    routing::{any, delete, get, post},
     Router, Server,
 };
 use std::net::SocketAddr;
@@ -149,8 +149,8 @@ async fn main() {
         .route("/_readyz", get(handlers::readiness_check))
         .route("/ready", get(handlers::readiness_check))
         // Auth endpoints (Standard /_auth and Envoy /_auth/* path suffix)
-        .route("/_auth", get(handlers::auth_handler))
-        .route("/_auth/*path", get(handlers::auth_handler))
+        .route("/_auth", any(handlers::auth_handler))
+        .route("/_auth/*path", any(handlers::auth_handler))
         .route("/", get(handlers::admin_page_handler))
         .route("/api/stats", get(handlers::stats_handler))
         .route("/api/stats/reset", post(handlers::reset_stats_handler))

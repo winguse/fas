@@ -179,9 +179,10 @@ pub async fn readiness_check() -> impl IntoResponse {
     (StatusCode::OK, "OK")
 }
 
-/// GET /_auth and GET /_auth/*
+/// User tasks executor for /_auth and /_auth/*
 pub async fn auth_handler(
     State(state): State<AppState>,
+    method: axum::http::Method,
     uri: axum::http::Uri,
     headers: HeaderMap,
     Query(query): Query<AuthQuery>,
@@ -216,7 +217,7 @@ pub async fn auth_handler(
         .get("X-Forwarded-Method")
         .or_else(|| headers.get("X-Original-Method"))
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("GET")
+        .unwrap_or(method.as_str())
         .to_string();
 
     // Envoy appends original path to /_auth (e.g. /_auth/abc).
@@ -868,9 +869,15 @@ mod tests {
         let query = AuthQuery { domain: None };
 
         let uri = axum::http::Uri::from_static("/_auth");
-        let resp = auth_handler(State(state.clone()), uri.clone(), headers, Query(query))
-            .await
-            .into_response();
+        let resp = auth_handler(
+            State(state.clone()),
+            axum::http::Method::GET,
+            uri.clone(),
+            headers,
+            Query(query),
+        )
+        .await
+        .into_response();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let set_cookie = resp
             .headers()
@@ -896,9 +903,15 @@ mod tests {
         );
         let query2 = AuthQuery { domain: None };
 
-        let resp2 = auth_handler(State(state.clone()), uri.clone(), headers2, Query(query2))
-            .await
-            .into_response();
+        let resp2 = auth_handler(
+            State(state.clone()),
+            axum::http::Method::GET,
+            uri.clone(),
+            headers2,
+            Query(query2),
+        )
+        .await
+        .into_response();
         assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
 
         // 3. Approve user via update_user_rule_handler ("allow_all")
@@ -923,9 +936,15 @@ mod tests {
         );
         let query3 = AuthQuery { domain: None };
 
-        let resp3 = auth_handler(State(state.clone()), uri.clone(), headers3, Query(query3))
-            .await
-            .into_response();
+        let resp3 = auth_handler(
+            State(state.clone()),
+            axum::http::Method::GET,
+            uri.clone(),
+            headers3,
+            Query(query3),
+        )
+        .await
+        .into_response();
         assert_eq!(resp3.status(), StatusCode::OK);
 
         if temp_data.exists() {
@@ -991,6 +1010,7 @@ acl_rules:
 
         let resp = auth_handler(
             State(state.clone()),
+            axum::http::Method::GET,
             envoy_uri,
             headers,
             Query(AuthQuery { domain: None }),
@@ -1000,6 +1020,115 @@ acl_rules:
 
         // Should return 200 OK because suffix /abc matches ^/abc$ in allow_abc rule
         assert_eq!(resp.status(), StatusCode::OK);
+
+        if temp_data.exists() {
+            let _ = std::fs::remove_file(temp_data);
+        }
+        if temp_acl.exists() {
+            let _ = std::fs::remove_file(temp_acl);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_envoy_non_get_method_auth() {
+        let temp_dir = std::env::temp_dir();
+        let temp_data = temp_dir.join(format!("test_envoy_post_{}.jsonl", uuid::Uuid::new_v4()));
+        let temp_acl = temp_dir.join(format!("test_envoy_post_{}.yaml", uuid::Uuid::new_v4()));
+        let store = Store::new(temp_data.clone(), temp_acl.clone());
+        let config = Config::from_env();
+        let state = AppState {
+            store: store.clone(),
+            config: config.clone(),
+        };
+
+        // ACL allows POST /submit on example.com
+        let acl_yaml = r#"
+acl_rules:
+  allow_post:
+    allow:
+      - method: "^POST$"
+        domain: "^example\\.com$"
+        path: "^/submit$"
+"#;
+        std::fs::write(&temp_acl, acl_yaml).unwrap();
+        store.load_acl().await.unwrap();
+
+        let sid = "envoy-post-sid-12345";
+        let now = Utc::now();
+        let user = crate::store::User {
+            sid: sid.to_string(),
+            last_seen_domain: "example.com".to_string(),
+            acl_rule: "allow_post".to_string(),
+            created_at: now,
+            updated_at: now,
+            expire_at: now + chrono::Duration::hours(1),
+            last_ip: "127.0.0.1".to_string(),
+            last_seen: now,
+            user_agent: "EnvoyTest".to_string(),
+            request_count: 1,
+            remark: "".to_string(),
+        };
+        {
+            let mut inner = store.inner.write().await;
+            inner.users.insert(sid.to_string(), user);
+        }
+
+        let envoy_uri = axum::http::Uri::from_static("/_auth/submit");
+
+        // Case 1: X-Forwarded-Method overrides the actual (GET) method.
+        let mut headers_fwd = HeaderMap::new();
+        headers_fwd.insert("Host", HeaderValue::from_static("example.com"));
+        headers_fwd.insert("X-Forwarded-Method", HeaderValue::from_static("POST"));
+        headers_fwd.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("fas_sid={}", sid)).unwrap(),
+        );
+        let resp_fwd = auth_handler(
+            State(state.clone()),
+            axum::http::Method::GET, // note: actual method is GET, X-Forwarded-Method is POST
+            envoy_uri.clone(),
+            headers_fwd,
+            Query(AuthQuery { domain: None }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp_fwd.status(), StatusCode::OK);
+
+        // Case 2: No forwarded method header -> falls back to the actual HTTP method (POST).
+        let mut headers_actual = HeaderMap::new();
+        headers_actual.insert("Host", HeaderValue::from_static("example.com"));
+        headers_actual.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("fas_sid={}", sid)).unwrap(),
+        );
+        let resp_actual = auth_handler(
+            State(state.clone()),
+            axum::http::Method::POST,
+            envoy_uri.clone(),
+            headers_actual,
+            Query(AuthQuery { domain: None }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp_actual.status(), StatusCode::OK);
+
+        // Case 3: actual method GET without forwarded header does NOT match allow_post -> 401.
+        let mut headers_deny = HeaderMap::new();
+        headers_deny.insert("Host", HeaderValue::from_static("example.com"));
+        headers_deny.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("fas_sid={}", sid)).unwrap(),
+        );
+        let resp_deny = auth_handler(
+            State(state.clone()),
+            axum::http::Method::GET,
+            envoy_uri,
+            headers_deny,
+            Query(AuthQuery { domain: None }),
+        )
+        .await
+        .into_response();
+        assert_eq!(resp_deny.status(), StatusCode::UNAUTHORIZED);
 
         if temp_data.exists() {
             let _ = std::fs::remove_file(temp_data);
